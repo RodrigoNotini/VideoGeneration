@@ -77,12 +77,27 @@ class Reporter:
         stage["note"] = note
         self.metrics["counters"]["completed_stages"] += 1
 
+    def _merge_metrics(self, state_metrics: dict[str, Any]) -> dict[str, Any]:
+        merged_metrics = deepcopy(state_metrics)
+
+        merged_stages = deepcopy(state_metrics.get("stages", {}))
+        merged_stages.update(deepcopy(self.metrics["stages"]))
+        merged_metrics["stages"] = merged_stages
+
+        merged_counters = deepcopy(state_metrics.get("counters", {}))
+        merged_counters.update(deepcopy(self.metrics["counters"]))
+        merged_metrics["counters"] = merged_counters
+
+        merged_flags = deepcopy(state_metrics.get("flags", {}))
+        merged_flags.update(deepcopy(self.metrics["flags"]))
+        merged_metrics["flags"] = merged_flags
+
+        return merged_metrics
+
     def sync_state_metrics(self, state: PipelineState) -> PipelineState:
         """Mirror reporter metrics into pipeline state."""
         next_state = copy_state(state)
-        next_state["metrics"]["stages"] = deepcopy(self.metrics["stages"])
-        next_state["metrics"]["counters"] = deepcopy(self.metrics["counters"])
-        next_state["metrics"]["flags"] = deepcopy(self.metrics["flags"])
+        next_state["metrics"] = self._merge_metrics(next_state["metrics"])
         return next_state
 
     def finalize(
@@ -91,9 +106,11 @@ class Reporter:
         final_state: PipelineState,
         status: str,
         artifacts: list[dict[str, str]],
+        state_checksum: str | None = None,
     ) -> dict[str, Any]:
         self.status = status
         self.finished_at = self._next_timestamp()
+        resolved_state_checksum = state_checksum or sha256_text(canonical_json(final_state))
         return {
             "run_id": self.run_id,
             "phase_name": self.phase_name,
@@ -101,8 +118,8 @@ class Reporter:
             "started_at": self.started_at,
             "finished_at": self.finished_at,
             "version_info": deepcopy(self.version_info),
-            "metrics": deepcopy(self.metrics),
-            "state_checksum": sha256_text(canonical_json(final_state)),
+            "metrics": self._merge_metrics(final_state["metrics"]),
+            "state_checksum": resolved_state_checksum,
             "artifacts": artifacts,
         }
 

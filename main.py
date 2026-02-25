@@ -64,12 +64,18 @@ def main() -> int:
     metadata_path = output_dir / "metadata.json"
 
     write_json(state_path, final_state)
+    state_checksum = _artifact_checksum(state_path)
 
     artifacts = [
         {"type": "state", "path": state_path.relative_to(project_root).as_posix()},
         {"type": "metadata", "path": metadata_path.relative_to(project_root).as_posix()},
     ]
-    metadata = reporter.finalize(final_state=final_state, status="success", artifacts=artifacts)
+    metadata = reporter.finalize(
+        final_state=final_state,
+        status="success",
+        artifacts=artifacts,
+        state_checksum=state_checksum,
+    )
     write_json(metadata_path, metadata)
 
     save_run(connection, metadata)
@@ -79,7 +85,7 @@ def main() -> int:
         artifact_type="state",
         artifact_path=artifacts[0]["path"],
         created_at=metadata["finished_at"],
-        checksum=_artifact_checksum(state_path),
+        checksum=state_checksum,
     )
     save_artifact(
         connection,
