@@ -1,0 +1,15 @@
+name: phase0_bootstrap
+phase: 0
+phase_name: "Bootstrap & Observability"
+topic: "AI & Tech Daily Briefing"
+target_platform: "youtube_shorts"
+target_duration_sec: 45
+output_dir: "outputs"
+database_path: "data/db/app.sqlite"
+deterministic_seed: "phase0-seed-v1"
+deterministic_started_at: "2026-01-01T00:00:00Z"
+versions:
+  prompt_version: "phase0-placeholder"
+  schema_version: "phase0-placeholder"
+  template_version: "v1-placeholder"
+  model_version: "phase0-placeholder"

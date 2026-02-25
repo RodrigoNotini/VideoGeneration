@@ -1,0 +1,53 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ScriptSchema",
+  "type": "object",
+  "required": [
+    "video_title",
+    "source_line",
+    "hook",
+    "scenes",
+    "cta"
+  ],
+  "properties": {
+    "video_title": {
+      "type": "string"
+    },
+    "source_line": {
+      "type": "string"
+    },
+    "hook": {
+      "type": "string"
+    },
+    "scenes": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "id",
+          "narration",
+          "image_prompt"
+        ],
+        "properties": {
+          "id": {
+            "type": "integer"
+          },
+          "narration": {
+            "type": "string"
+          },
+          "image_prompt": {
+            "type": [
+              "string",
+              "null"
+            ]
+          }
+        },
+        "additionalProperties": false
+      }
+    },
+    "cta": {
+      "type": "string"
+    }
+  },
+  "additionalProperties": false
+}

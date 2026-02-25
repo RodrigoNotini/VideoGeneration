@@ -1,0 +1,2 @@
+Phase 0 placeholder validator prompt.
+No validation loop logic is enabled in this phase.

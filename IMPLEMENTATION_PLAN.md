@@ -10,7 +10,10 @@ This document defines HOW the system is built.
 All architectural contracts, invariants, and policies live in CONTEXT.md.
 
 Rules:
-
+- Do not create new files unless required by CONTEXT.md.
+- If a new file is necessary, place it in the most appropriate existing folder.
+- Create a new folder only if no existing folder fits, and name it descriptively.
+- Keep the project structure clean, modular, and consistent.
 - Only one phase may be IN_PROGRESS at a time.
 - Future-phase functionality must NOT be implemented early.
 - A phase becomes DONE only after all exit criteria are satisfied.
@@ -87,8 +90,8 @@ If a phase introduces new third-party libraries, it MUST update `requirements/ph
 
 | Phase | Name | Status |
 |-------|------|--------|
-| 0 | Bootstrap & Observability | IN_PROGRESS |
-| 1 | RSS Discovery | LOCKED |
+| 0 | Bootstrap & Observability | DONE |
+| 1 | RSS Discovery | IN PROGRESS |
 | 2 | Relevance Ranking | LOCKED |
 | 3 | Article Extraction | LOCKED |
 | 4 | Script Generation | LOCKED |

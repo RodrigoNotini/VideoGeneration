@@ -287,8 +287,23 @@ VideoGeneration/
 ├── CONTEXT.md
 ├── CHANGELOG.md
 ├── README.md
+├── main.py                       # Phase 0 entrypoint (stub deterministic pipeline)
+├── core/
+│   ├── __init__.py
+│   ├── state.py                  # State contract and deterministic initial state
+│   ├── common/
+│   │   ├── __init__.py
+│   │   └── utils.py              # Deterministic utility helpers
+│   ├── config/
+│   │   ├── __init__.py
+│   │   ├── config_loader.py      # Strict config loader
+│   │   └── env_validation.py     # Phase-aware env validation
+│   └── persistence/
+│       ├── __init__.py
+│       └── db.py                 # SQLite initialization and persistence helpers
 ├── requirements.txt              # Agregador opcional (referencia requirements/*.txt)
 ├── .env                          # API keys (NÃO versionado)
+├── .env.example                  # Env vars esperadas por fase
 ├── .gitignore
 │
 ├── requirements/                 # Source of truth das dependências
@@ -312,13 +327,16 @@ VideoGeneration/
 │
 ├── prompts/
 │   ├── script_writer/
+│   │   └── system.txt
 │   └── validator/
+│       └── system.txt
 │
 ├── schemas/
 │   ├── article_schema.json
 │   └── script_schema.json
 │
 ├── agents/
+│   ├── __init__.py
 │   ├── rss_collector.py
 │   ├── relevance_ranker.py
 │   ├── article_extractor.py
@@ -330,17 +348,21 @@ VideoGeneration/
 │   └── reporter.py
 │
 ├── graphs/
+│   ├── __init__.py
 │   └── news_to_video_graph.py
 │
 ├── render/
 │   └── templates/
 │       └── v1/                   # Template versionado
+│           └── template_manifest.json
 │
 ├── outputs/
+│   └── .gitkeep
 │
 └── data/
     └── db/
-        └── app.sqlite
+        ├── .gitkeep
+        └── app.sqlite            # Gerado em runtime
 
 ---
 
