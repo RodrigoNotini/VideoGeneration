@@ -94,3 +94,44 @@ def save_artifact(
             """,
             (run_id, artifact_type, artifact_path, created_at, checksum),
         )
+
+
+def fetch_existing_rss_keys(connection: sqlite3.Connection) -> tuple[set[str], set[str]]:
+    """Return existing RSS URL and title_hash keys for duplicate detection."""
+    cursor = connection.execute("SELECT url, title_hash FROM rss_items")
+    existing_urls: set[str] = set()
+    existing_title_hashes: set[str] = set()
+    for row in cursor.fetchall():
+        existing_urls.add(str(row[0]))
+        existing_title_hashes.add(str(row[1]))
+    return existing_urls, existing_title_hashes
+
+
+def insert_rss_items(connection: sqlite3.Connection, items: list[dict[str, Any]]) -> int:
+    """Insert RSS rows with duplicate-safe semantics, returning inserted row count."""
+    if not items:
+        return 0
+
+    values = [
+        (
+            item["url"],
+            item["title"],
+            item["title_hash"],
+            item["source"],
+            item.get("published_at", ""),
+            item["discovered_at"],
+        )
+        for item in items
+    ]
+
+    before_changes = connection.total_changes
+    with connection:
+        connection.executemany(
+            """
+            INSERT OR IGNORE INTO rss_items (
+                url, title, title_hash, source, published_at, discovered_at
+            ) VALUES (?, ?, ?, ?, ?, ?)
+            """,
+            values,
+        )
+    return connection.total_changes - before_changes

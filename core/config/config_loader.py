@@ -78,6 +78,7 @@ def _validate_pipeline_config(config: dict[str, Any]) -> None:
             "topic",
             "target_platform",
             "target_duration_sec",
+            "max_articles_per_run",
             "output_dir",
             "database_path",
             "deterministic_seed",
@@ -90,6 +91,8 @@ def _validate_pipeline_config(config: dict[str, Any]) -> None:
         raise ConfigError("configs/pipeline.yaml 'phase' must be an integer")
     if not isinstance(config["target_duration_sec"], int):
         raise ConfigError("configs/pipeline.yaml 'target_duration_sec' must be an integer")
+    if not isinstance(config["max_articles_per_run"], int) or config["max_articles_per_run"] < 1:
+        raise ConfigError("configs/pipeline.yaml 'max_articles_per_run' must be an integer >= 1")
     string_keys = (
         "name",
         "phase_name",

@@ -91,7 +91,7 @@ If a phase introduces new third-party libraries, it MUST update `requirements/ph
 | Phase | Name | Status |
 |-------|------|--------|
 | 0 | Bootstrap & Observability | DONE |
-| 1 | RSS Discovery | IN PROGRESS |
+| 1 | RSS Discovery | DONE |
 | 2 | Relevance Ranking | LOCKED |
 | 3 | Article Extraction | LOCKED |
 | 4 | Script Generation | LOCKED |
