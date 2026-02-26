@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+import argparse
+import logging
+import os
 from pathlib import Path
 
 from agents.reporter import Reporter
@@ -11,6 +14,17 @@ from core.persistence.db import initialize_database, save_artifact, save_run
 from core.state import copy_state, make_initial_state
 from core.common.utils import sha256_text, write_json
 from graphs.news_to_video_graph import run_pipeline
+
+
+def _parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(description="Run VideoGeneration pipeline")
+    parser.add_argument(
+        "--max-articles-per-run",
+        type=int,
+        default=None,
+        help="Override max RSS articles fetched in this run (must be >= 1).",
+    )
+    return parser.parse_args()
 
 
 def _artifact_checksum(path: Path) -> str:
@@ -25,6 +39,17 @@ def _artifact_path_for_metadata(path: Path, project_root: Path) -> str:
 
 
 def main() -> int:
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
+    )
+    args = _parse_args()
+    if args.max_articles_per_run is not None:
+        if args.max_articles_per_run < 1:
+            print("Argument error: --max-articles-per-run must be >= 1")
+            return 1
+        os.environ["VG_MAX_ARTICLES_PER_RUN"] = str(args.max_articles_per_run)
+
     project_root = Path(__file__).resolve().parent
 
     try:

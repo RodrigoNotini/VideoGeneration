@@ -91,7 +91,7 @@ If a phase introduces new third-party libraries, it MUST update `requirements/ph
 | Phase | Name | Status |
 |-------|------|--------|
 | 0 | Bootstrap & Observability | DONE |
-| 1 | RSS Discovery | DONE |
+| 1 | RSS Discovery | IN_PROGRESS |
 | 2 | Relevance Ranking | LOCKED |
 | 3 | Article Extraction | LOCKED |
 | 4 | Script Generation | LOCKED |
@@ -204,12 +204,23 @@ Fetch RSS feeds defined in `configs/rss_feeds.yaml`, normalize entries, deduplic
 - Deduplicate by URL and title hash.
 - Persist to DB.
 - Generate rss_items.json.
+- Enforce run-start RSS retention cleanup for rows older than 7 days.
+- If post-cleanup RSS inventory is > 200, skip network fetch and continue pipeline with DB-backed candidates.
+- Increase `max_articles_per_run` default from 20 to 50.
+- Apply deterministic feed balancing using rotated start index:
+  - `start_index = f(utc_date) % total_feeds`
+  - traversal order: `feeds[start_index:] + feeds[:start_index]`
+- Update CHANGELOG, CONTEXT, IMPLEMENTATION_PLAN, and README for this Phase 1 reopening.
 
 ## Exit Criteria
 
 - RSS fetching verified.
 - Deduplication verified.
 - Deterministic ordering.
+- Retention cleanup executes before threshold check and removes rows older than configured policy.
+- Skip-fetch behavior verified for strict condition `post_cleanup_count > 200`.
+- `max_articles_per_run` default and effective cap verified at 50 for fetch and skip paths.
+- Deterministic feed start rotation verified and auditable via metrics.
 - Dependencies isolated.
 - README updated accurately.
 

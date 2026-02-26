@@ -4,7 +4,10 @@ phase_name: "RSS Discovery"
 topic: "AI & Tech Daily Briefing"
 target_platform: "youtube_shorts"
 target_duration_sec: 45
-max_articles_per_run: 20
+max_articles_per_run: 50
+rss_skip_fetch_threshold: 200
+rss_retention_days: 7
+rss_feed_rotation_basis: "utc_date"
 output_dir: "outputs"
 database_path: "data/db/app.sqlite"
 deterministic_seed: "phase1-seed-v1"

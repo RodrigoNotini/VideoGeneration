@@ -136,6 +136,16 @@ Responsibilities:
 - Normalize entries
 - Deduplicate by URL and title hash
 - Store candidates in database
+- Run retention cleanup at collector start and delete rows older than 7 days
+- Evaluate post-cleanup DB inventory and skip network fetch when inventory is > 200
+- Load deterministic DB-backed candidates when fetch is skipped so ranking still runs
+- Apply deterministic feed balancing with rotated start index derived from UTC date
+
+RSS Discovery Invariants:
+
+- Cleanup executes before threshold evaluation on every run.
+- No `rss_items` row may remain in DB for more than 7 days.
+- Feed traversal order must be deterministic for a fixed UTC date and feed list.
 
 ---
 

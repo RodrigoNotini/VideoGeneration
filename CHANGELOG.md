@@ -1,5 +1,42 @@
 # CHANGELOG
+## 0.2.2 - Phase 1 adjustments 
+### What Changed
+- Reopened Phase 1 and set it to `IN_PROGRESS` in `IMPLEMENTATION_PLAN.md`.
+- Updated Phase 1 collector runtime in `agents/rss_collector.py`:
+  - Run-start retention cleanup before any fetch/skip decision.
+  - Skip network fetch when post-cleanup DB inventory is strictly `> 200`.
+  - Deterministic DB hydration path for skip mode (feeds are not requested).
+  - Increased effective cap usage to `max_articles_per_run = 50`.
+  - Deterministic feed rotation via `start_index = f(utc_date) % total_feeds` and rotated traversal order.
+  - Added metrics/flags for retention deletions, threshold skip, and feed rotation index/basis.
+- Extended persistence API in `core/persistence/db.py`:
+  - `delete_rss_items_older_than(...)`
+  - `count_rss_items(...)`
+  - `fetch_rss_items_for_ranking(...)`
+- Extended strict pipeline config validation in `core/config/config_loader.py` and config values in `configs/pipeline.yaml`:
+  - `max_articles_per_run: 50`
+  - `rss_skip_fetch_threshold: 200`
+  - `rss_retention_days: 7`
+  - `rss_feed_rotation_basis: utc_date`
+- Expanded tests in `tests/test_phase1_exit_criteria.py` for retention, strict threshold semantics, cap at 50, and deterministic feed rotation.
+- Synchronized docs in `CHANGELOG.md`, `CONTEXT.md`, `IMPLEMENTATION_PLAN.md`, and `README.md`.
 
+### Why
+- Reduce redundant network calls when DB already has enough recent inventory.
+- Improve deterministic feed balancing across runs.
+- Enforce RSS freshness by ensuring DB rows older than one week are removed.
+- Keep plan/architecture/operations docs aligned after reopening Phase 1.
+
+### Expected Impact
+- Warm DB runs will often skip external feed requests and continue directly to ranking.
+- Feed start point rotates deterministically by UTC date, improving coverage distribution.
+- RSS DB freshness is bounded to one week.
+- Per-run item budget is now 50 for both fetch and skip paths.
+
+### Validation Method
+- Targeted checks implemented in `tests/test_phase1_exit_criteria.py`.
+- Full test command:
+  - `python -m unittest discover -s tests -p "test_*.py"`
 ## 0.2.1 - Phase 1 Robustness and Failure Finalization Patch
 
 ### What Changed

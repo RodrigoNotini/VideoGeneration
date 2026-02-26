@@ -6,7 +6,7 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from core.common.utils import canonical_json
+from core.common.utils import canonical_json, sha256_text
 
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
@@ -43,6 +43,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     )
     """,
     "CREATE INDEX IF NOT EXISTS idx_rss_items_url ON rss_items(url)",
+    "CREATE INDEX IF NOT EXISTS idx_rss_items_discovered_at ON rss_items(discovered_at)",
     "CREATE INDEX IF NOT EXISTS idx_runs_phase ON runs(phase_name)",
     "CREATE INDEX IF NOT EXISTS idx_artifacts_run_id ON artifacts(run_id)",
 )
@@ -135,3 +136,62 @@ def insert_rss_items(connection: sqlite3.Connection, items: list[dict[str, Any]]
             values,
         )
     return connection.total_changes - before_changes
+
+
+def delete_rss_items_older_than(connection: sqlite3.Connection, cutoff_discovered_at: str) -> int:
+    """Delete RSS rows older than the provided discovered_at cutoff (UTC ISO-8601)."""
+    before_changes = connection.total_changes
+    with connection:
+        connection.execute(
+            "DELETE FROM rss_items WHERE discovered_at < ?",
+            (cutoff_discovered_at,),
+        )
+    return connection.total_changes - before_changes
+
+
+def count_rss_items(connection: sqlite3.Connection) -> int:
+    """Return current RSS inventory size."""
+    row = connection.execute("SELECT COUNT(*) FROM rss_items").fetchone()
+    if not row:
+        return 0
+    return int(row[0])
+
+
+def fetch_rss_items_for_ranking(connection: sqlite3.Connection, limit: int) -> list[dict[str, Any]]:
+    """Load deterministic RSS candidates from DB for downstream ranking."""
+    if limit < 1:
+        return []
+
+    rows = connection.execute(
+        """
+        SELECT
+            url,
+            title,
+            title_hash,
+            source,
+            COALESCE(published_at, '') AS published_at,
+            discovered_at
+        FROM rss_items
+        ORDER BY
+            CASE WHEN COALESCE(published_at, '') = '' THEN 1 ELSE 0 END ASC,
+            published_at DESC,
+            source ASC,
+            title ASC,
+            url ASC
+        LIMIT ?
+        """,
+        (limit,),
+    ).fetchall()
+
+    return [
+        {
+            "id": sha256_text(str(row[0])),
+            "url": str(row[0]),
+            "title": str(row[1]),
+            "title_hash": str(row[2]),
+            "source": str(row[3]),
+            "published_at": str(row[4]),
+            "discovered_at": str(row[5]),
+        }
+        for row in rows
+    ]

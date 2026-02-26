@@ -79,6 +79,9 @@ def _validate_pipeline_config(config: dict[str, Any]) -> None:
             "target_platform",
             "target_duration_sec",
             "max_articles_per_run",
+            "rss_skip_fetch_threshold",
+            "rss_retention_days",
+            "rss_feed_rotation_basis",
             "output_dir",
             "database_path",
             "deterministic_seed",
@@ -93,6 +96,24 @@ def _validate_pipeline_config(config: dict[str, Any]) -> None:
         raise ConfigError("configs/pipeline.yaml 'target_duration_sec' must be an integer")
     if not isinstance(config["max_articles_per_run"], int) or config["max_articles_per_run"] < 1:
         raise ConfigError("configs/pipeline.yaml 'max_articles_per_run' must be an integer >= 1")
+    if (
+        not isinstance(config["rss_skip_fetch_threshold"], int)
+        or config["rss_skip_fetch_threshold"] < 1
+    ):
+        raise ConfigError("configs/pipeline.yaml 'rss_skip_fetch_threshold' must be an integer >= 1")
+    if not isinstance(config["rss_retention_days"], int) or config["rss_retention_days"] < 1:
+        raise ConfigError("configs/pipeline.yaml 'rss_retention_days' must be an integer >= 1")
+    if (
+        not isinstance(config["rss_feed_rotation_basis"], str)
+        or not config["rss_feed_rotation_basis"].strip()
+    ):
+        raise ConfigError("configs/pipeline.yaml 'rss_feed_rotation_basis' must be a non-empty string")
+    allowed_rotation_bases = {"utc_date"}
+    if config["rss_feed_rotation_basis"] not in allowed_rotation_bases:
+        raise ConfigError(
+            "configs/pipeline.yaml 'rss_feed_rotation_basis' must be one of: "
+            + ", ".join(sorted(allowed_rotation_bases))
+        )
     string_keys = (
         "name",
         "phase_name",
