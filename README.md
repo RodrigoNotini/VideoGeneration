@@ -80,6 +80,19 @@ The pipeline auto-loads `.env` from the project root using `python-dotenv`.
 
 ```bash
 python main.py
+
+# Override theme for this run (CLI flag, allowed: AI or Tech)
+python main.py --theme Tech
+
+# Override max articles for this run (CLI flag)
+python main.py --max-articles-per-run 30
+
+# Override both in one command
+python main.py --theme AI --max-articles-per-run 30
+
+# Default theme can still be configured in configs/pipeline.yaml
+# Example in YAML:
+# theme: "Tech"
 ```
 
 ## Runtime Output

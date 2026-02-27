@@ -23,6 +23,7 @@ logger = logging.getLogger(__name__)
 
 ALLOWED_THEMES = {"AI", "Tech"}
 THEME_NORMALIZATION = {"ai": "AI", "tech": "Tech"}
+THEME_OVERRIDE_ENV = "VG_THEME"
 DEFAULT_TARGET_COUNT = 30
 DEFAULT_LOWER_BOUND = 25
 DEFAULT_UPPER_BOUND = 35
@@ -124,7 +125,11 @@ def _load_project_env() -> None:
 
 
 def _resolve_theme(pipeline_config: dict[str, Any]) -> str:
-    raw_theme = str(pipeline_config.get("theme", "")).strip()
+    override_theme = os.getenv(THEME_OVERRIDE_ENV)
+    if override_theme is not None and override_theme.strip():
+        raw_theme = override_theme.strip()
+    else:
+        raw_theme = str(pipeline_config.get("theme", "")).strip()
     normalized = THEME_NORMALIZATION.get(raw_theme.casefold())
     if normalized in ALLOWED_THEMES:
         return normalized
@@ -133,7 +138,11 @@ def _resolve_theme(pipeline_config: dict[str, Any]) -> str:
         _phase2_error(
             code="invalid_theme",
             message="Theme must be AI or Tech.",
-            details={"received_theme": raw_theme, "allowed_themes": sorted(ALLOWED_THEMES)},
+            details={
+                "received_theme": raw_theme,
+                "allowed_themes": sorted(ALLOWED_THEMES),
+                "theme_override_env_var": THEME_OVERRIDE_ENV,
+            },
         )
     )
 

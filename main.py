@@ -21,6 +21,12 @@ from graphs.news_to_video_graph import run_pipeline
 def _parse_args() -> argparse.Namespace:
     parser = argparse.ArgumentParser(description="Run VideoGeneration pipeline")
     parser.add_argument(
+        "--theme",
+        choices=("AI", "Tech"),
+        default=None,
+        help="Override content theme for this run (AI or Tech).",
+    )
+    parser.add_argument(
         "--max-articles-per-run",
         type=int,
         default=None,
@@ -46,6 +52,8 @@ def main() -> int:
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
     args = _parse_args()
+    if args.theme is not None:
+        os.environ["VG_THEME"] = args.theme
     if args.max_articles_per_run is not None:
         if args.max_articles_per_run < 1:
             print("Argument error: --max-articles-per-run must be >= 1")
