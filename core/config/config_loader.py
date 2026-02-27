@@ -60,10 +60,10 @@ def _validate_openai_config(config: dict[str, Any]) -> None:
         raise ConfigError("configs/openai.yaml 'models' must be a mapping")
     _require_keys(
         models,
-        ("embeddings", "script_writer", "image_generator", "tts"),
+        ("theme_selector", "embeddings", "script_writer", "image_generator", "tts"),
         "configs/openai.yaml models",
     )
-    for key in ("embeddings", "script_writer", "image_generator", "tts"):
+    for key in ("theme_selector", "embeddings", "script_writer", "image_generator", "tts"):
         if not isinstance(models[key], str) or not models[key].strip():
             raise ConfigError(f"configs/openai.yaml models.{key} must be a non-empty string")
 
@@ -76,12 +76,14 @@ def _validate_pipeline_config(config: dict[str, Any]) -> None:
             "phase",
             "phase_name",
             "topic",
+            "theme",
             "target_platform",
             "target_duration_sec",
             "max_articles_per_run",
             "rss_skip_fetch_threshold",
             "rss_retention_days",
             "rss_feed_rotation_basis",
+            "phase2_selector",
             "output_dir",
             "database_path",
             "deterministic_seed",
@@ -118,6 +120,7 @@ def _validate_pipeline_config(config: dict[str, Any]) -> None:
         "name",
         "phase_name",
         "topic",
+        "theme",
         "target_platform",
         "output_dir",
         "database_path",
@@ -127,6 +130,55 @@ def _validate_pipeline_config(config: dict[str, Any]) -> None:
     for key in string_keys:
         if not isinstance(config[key], str) or not config[key].strip():
             raise ConfigError(f"configs/pipeline.yaml '{key}' must be a non-empty string")
+    if config["theme"] not in {"AI", "Tech"}:
+        raise ConfigError("configs/pipeline.yaml 'theme' must be one of: AI, Tech")
+
+    selector = config["phase2_selector"]
+    if not isinstance(selector, dict):
+        raise ConfigError("configs/pipeline.yaml 'phase2_selector' must be a mapping")
+    _require_keys(
+        selector,
+        (
+            "model",
+            "prompt_version",
+            "target_count",
+            "lower_bound",
+            "upper_bound",
+            "tie_break_policy",
+            "deterministic",
+        ),
+        "configs/pipeline.yaml phase2_selector",
+    )
+    for key in ("model", "prompt_version", "tie_break_policy"):
+        if not isinstance(selector[key], str) or not selector[key].strip():
+            raise ConfigError(f"configs/pipeline.yaml phase2_selector.{key} must be a non-empty string")
+    for key in ("target_count", "lower_bound", "upper_bound"):
+        if not isinstance(selector[key], int) or selector[key] < 1:
+            raise ConfigError(f"configs/pipeline.yaml phase2_selector.{key} must be an integer >= 1")
+    if selector["lower_bound"] > selector["upper_bound"]:
+        raise ConfigError("configs/pipeline.yaml phase2_selector.lower_bound must be <= upper_bound")
+    if selector["target_count"] < selector["lower_bound"] or selector["target_count"] > selector["upper_bound"]:
+        raise ConfigError(
+            "configs/pipeline.yaml phase2_selector.target_count must be within [lower_bound, upper_bound]"
+        )
+    deterministic = selector["deterministic"]
+    if not isinstance(deterministic, dict):
+        raise ConfigError("configs/pipeline.yaml phase2_selector.deterministic must be a mapping")
+    _require_keys(
+        deterministic,
+        ("temperature", "top_p"),
+        "configs/pipeline.yaml phase2_selector.deterministic",
+    )
+    for key in ("temperature", "top_p"):
+        value = deterministic[key]
+        if not isinstance(value, (int, float)):
+            raise ConfigError(
+                f"configs/pipeline.yaml phase2_selector.deterministic.{key} must be numeric"
+            )
+    if float(deterministic["temperature"]) < 0:
+        raise ConfigError("configs/pipeline.yaml phase2_selector.deterministic.temperature must be >= 0")
+    if float(deterministic["top_p"]) <= 0 or float(deterministic["top_p"]) > 1:
+        raise ConfigError("configs/pipeline.yaml phase2_selector.deterministic.top_p must be in (0, 1]")
     versions = config["versions"]
     if not isinstance(versions, dict):
         raise ConfigError("configs/pipeline.yaml 'versions' must be a mapping")

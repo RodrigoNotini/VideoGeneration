@@ -1,88 +1,56 @@
 # AI & Tech News -> YouTube Shorts Automation
 
-Phase 1 implementation of a deterministic multi-agent pipeline skeleton using LangGraph + SQLite.
+Phase 2 implementation of a replay-deterministic, production-stable multi-agent pipeline using LangGraph + SQLite + OpenAI.
 
 ## Current Phase
 
 | Phase | Name | Status |
 |---|---|---|
 | 0 | Bootstrap & Observability | DONE |
-| 1 | RSS Discovery | IN_PROGRESS (reopened) |
-| 2 | Relevance Ranking | LOCKED |
-| 3 | Article Extraction | LOCKED |
-| 4 | Script Generation | LOCKED |
-| 5 | Validation Loop | LOCKED |
-| 6 | Image Generation | LOCKED |
-| 7 | TTS & Timing | LOCKED |
-| 8 | Video Rendering | LOCKED |
-| 9 | Production Hardening | LOCKED |
+| 1 | RSS Discovery | DONE |
+| 2 | Theme URL Selection | IN_PROGRESS |
+| 3 | Interestingness Ranking | LOCKED |
+| 4 | Article Extraction | LOCKED |
+| 5 | Script Generation | LOCKED |
+| 6 | Validation Loop | LOCKED |
+| 7 | Image Generation | LOCKED |
+| 8 | TTS & Timing | LOCKED |
+| 9 | Video Rendering | LOCKED |
 
-## Phase 1 Scope
+## Phase 2 Scope
 
-Phase 1 is responsible only for deterministic RSS discovery and persistence of candidate news items.
+Phase 2 adds a Theme URL Selector between RSS discovery and ranking with deterministic replay guarantees and production stability checks.
 
 Implemented:
-- Strict config loading for:
-  - `configs/rss_feeds.yaml`
-  - `configs/openai.yaml`
-  - `configs/pipeline.yaml`
-- Phase-aware environment validation (Phase 1 requires no API secrets).
-- Idempotent SQLite initialization for:
-  - `rss_items`
-  - `runs`
-  - `artifacts`
-- RSS ingestion with deterministic behavior:
-  - Request timeout: `10s`.
-  - Fixed user-agent: `VideoGenerationPhase1RSSCollector/1.0`.
-  - Deterministic feed rotation by UTC date (`rss_feed_rotation_basis: utc_date`).
-  - URL canonicalization and title normalization.
-  - Deduplication by canonical URL first, then normalized title hash.
-  - Deduplication against rows already in DB.
-- Retention and inventory-aware fetch decision:
-  - Cleanup first: delete `rss_items` older than `rss_retention_days` (default `7`).
-  - If post-cleanup inventory is `> rss_skip_fetch_threshold` (default `200`), skip HTTP fetch and load top items from DB.
-- Collection cap:
-  - `max_articles_per_run` default is `50`.
-  - Runtime override supported via CLI argument `--max-articles-per-run`.
-- Deterministic candidate ordering:
-  - Sort by `published_at` descending (missing dates last), then `source`, `title`, `url`.
-- Runtime logs for feed order and attempts:
-  - Rotated feed traversal order.
-  - Per-feed attempt index/source/url.
-  - Per-feed success/failure.
-- Output artifacts:
-  - `outputs/state.json`
-  - `outputs/rss_items.json`
-  - `outputs/metadata.json`
+- Theme validation with strict allowed values: `AI` or `Tech`.
+- Selector consumes up to 50 normalized `rss_items`.
+- Model-based theme scoring with strict JSON schema response contract.
+- Deterministic retry policy:
+  - 1 retry on malformed/invalid model response.
+  - Deterministic keyword-based fallback if retry also fails.
+- Deterministic ordering policy:
+  - score descending
+  - tie-break by `published_at` descending
+  - then canonical URL ascending
+- Stability policy for live-model variance:
+  - replay/test mode uses deterministic mocked/recorded scores
+  - production behavior is validated with repeated-run overlap checks (high-overlap subset expectation)
+- Cardinality policy:
+  - input `< 25` -> return all (policy warning metric)
+  - input `25..35` -> return all
+  - input `> 35` -> return top 30
+- Handoff contract:
+  - selected subset written to `state.ranked_items` (reused pre-ranking field)
+- Selector artifact output:
+  - `outputs/theme_selected_urls.json`
 
-Not implemented in Phase 1:
-- Embeddings/ranking model calls.
-- Article scraping.
-- LLM script generation.
+Not implemented in Phase 2:
+- Phase 3 interestingness ranking criteria logic.
+- Article extraction/scraping.
+- Script generation/validation.
 - Image generation.
-- TTS generation.
-- Final video rendering.
-
-## End-to-End Behavior (Phase 1)
-
-For each run, the RSS collector executes in this order:
-
-1. Load configs and open SQLite DB.
-2. Resolve target cap:
-   - Start from `pipeline.max_articles_per_run` (default `50`).
-   - If `--max-articles-per-run N` is provided, use `N` for this run only.
-3. Run retention cleanup (`rss_retention_days`).
-4. Count post-cleanup inventory.
-5. Decide fetch path:
-   - If inventory `> rss_skip_fetch_threshold`, skip network fetch and read DB items for ranking.
-   - Else fetch feeds in rotated deterministic order.
-6. While fetching:
-   - Continue on individual feed failures.
-   - Stop early once cap is reached.
-7. Sort collected items deterministically.
-8. Insert newly discovered normalized rows in `rss_items`.
-9. Populate state + metrics/flags.
-10. Fail run only if resulting candidate set is empty.
+- TTS.
+- Video rendering.
 
 ## Setup
 
@@ -91,6 +59,7 @@ python -m venv .venv
 .venv\Scripts\activate
 pip install -r requirements/base.txt
 pip install -r requirements/phase1.txt
+pip install -r requirements/phase2.txt
 ```
 
 Optional dev tools:
@@ -101,131 +70,65 @@ pip install -r requirements/dev.txt
 
 ## Environment
 
-Copy `.env.example` to `.env` if needed.  
-Phase 1 runs without `.env` and without secrets.
+Copy `.env.example` to `.env` and set:
+
+- `OPENAI_API_KEY` (required from Phase 2 onward)
+
+The pipeline auto-loads `.env` from the project root using `python-dotenv`.
 
 ## Run
-
-Default run (uses `max_articles_per_run` from config, default `50`):
 
 ```bash
 python main.py
 ```
 
-Run with custom max articles for this execution only:
-
-```bash
-python main.py --max-articles-per-run 1
-```
-
-Validation rule:
-- `--max-articles-per-run` must be an integer `>= 1`.
-
 ## Runtime Output
 
-Expected results after a successful run:
-- `data/db/app.sqlite` exists and schema is initialized.
-- `outputs/state.json` is written.
-- `outputs/rss_items.json` is written.
-- `outputs/metadata.json` is written.
-- `rss_items` inserts include only new deduplicated candidates.
+Expected outputs after a successful run:
+- `outputs/state.json`
+- `outputs/rss_items.json`
+- `outputs/theme_selected_urls.json`
+- `outputs/metadata.json`
 
-Console logs include:
-- Feed rotation order used for search.
-- Feed attempt sequence (`attempt X/Y`).
-- Feed success with entry count.
-- Feed failure with traceback.
-- Fetch-skip decision when threshold is hit.
-
-## Failure and Collection Semantics
-
-- Partial feed failures are tolerated when at least one valid item is produced.
-- Collector fails only when final `rss_items` for the run is empty.
-- When feeds are exhausted before the target cap, fewer items are returned and metrics indicate target not reached.
-- When skip-fetch path is active, no feed HTTP requests are made in that run.
-
-## Key Configs (Phase 1)
+## Key Configs
 
 From `configs/pipeline.yaml`:
+- `theme: "AI"` (allowed: `AI`, `Tech`)
 - `max_articles_per_run: 50`
-- `rss_skip_fetch_threshold: 200`
-- `rss_retention_days: 7`
-- `rss_feed_rotation_basis: "utc_date"`
-- `database_path: "data/db/app.sqlite"`
-- `output_dir: "outputs"`
+- `phase2_selector.model: "gpt-4.1-mini"`
+- `phase2_selector.target_count: 30`
+- `phase2_selector.lower_bound: 25`
+- `phase2_selector.upper_bound: 35`
+- `phase2_selector.tie_break_policy: "published_at_desc_then_canonical_url_asc"`
+- `phase2_selector.deterministic.temperature: 0.0`
+- `phase2_selector.deterministic.top_p: 1.0`
 
-From `configs/rss_feeds.yaml`:
-- Ordered list of feeds (`name`, `url`) used as base list before deterministic rotation.
+From `configs/openai.yaml`:
+- `api_key_env_var: "OPENAI_API_KEY"`
+- `models.theme_selector: "gpt-4.1-mini"`
 
 ## Project Structure
 
 ```text
 VideoGeneration/
+|-- .env
+|-- .env.example
 |-- agents/
-|   |-- article_extractor.py
-|   |-- image_generator.py
-|   |-- relevance_ranker.py
-|   |-- reporter.py
 |   |-- rss_collector.py
-|   |-- script_validator.py
+|   |-- theme_url_selector.py
+|   |-- relevance_ranker.py
+|   |-- article_extractor.py
 |   |-- script_writer.py
+|   |-- script_validator.py
+|   |-- image_generator.py
 |   |-- tts_generator.py
 |   |-- video_renderer.py
-|   `-- __init__.py
-|-- configs/
-|   |-- openai.yaml
-|   |-- pipeline.yaml
-|   `-- rss_feeds.yaml
+|   `-- reporter.py
 |-- core/
-|   |-- common/
-|   |   |-- utils.py
-|   |   `-- __init__.py
-|   |-- config/
-|   |   |-- config_loader.py
-|   |   |-- env_validation.py
-|   |   `-- __init__.py
-|   |-- persistence/
-|   |   |-- db.py
-|   |   `-- __init__.py
-|   |-- state.py
-|   `-- __init__.py
-|-- data/db/
-|   |-- .gitkeep
-|   `-- app.sqlite
 |-- graphs/
-|   |-- news_to_video_graph.py
-|   `-- __init__.py
-|-- outputs/
-|   |-- .gitkeep
-|   |-- metadata.json
-|   |-- rss_items.json
-|   `-- state.json
-|-- prompts/
-|   |-- script_writer/system.txt
-|   `-- validator/system.txt
-|-- render/templates/v1/
-|   `-- template_manifest.json
+|-- configs/
 |-- requirements/
-|   |-- base.txt
-|   |-- dev.txt
-|   |-- phase1.txt
-|   |-- phase2.txt
-|   |-- phase3.txt
-|   |-- phase4.txt
-|   |-- phase5.txt
-|   |-- phase6.txt
-|   |-- phase7.txt
-|   |-- phase8.txt
-|   `-- phase9.txt
-|-- schemas/
-|   |-- article_schema.json
-|   `-- script_schema.json
-|-- .env.example
-|-- .gitignore
-|-- CHANGELOG.md
-|-- CONTEXT.md
-|-- IMPLEMENTATION_PLAN.md
-|-- README.md
-|-- requirements.txt
+|-- tests/
+|-- outputs/
 `-- main.py
 ```

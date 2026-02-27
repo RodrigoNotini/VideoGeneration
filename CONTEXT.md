@@ -1,4 +1,4 @@
-# AI & Tech News → YouTube Shorts Automation System
+﻿# AI & Tech News â†’ YouTube Shorts Automation System
 ## MAS Architecture using LangGraph + OpenAI + MoviePy
 
 ---
@@ -10,7 +10,8 @@ This project implements a production-grade Multi-Agent System (MAS) that automat
 The system must:
 
 - Collect AI & Tech news via RSS feeds
-- Rank articles by semantic relevance
+- Select theme-aligned URLs before ranking
+- Rank articles by AI & Tech interestingness criteria
 - Extract and normalize article content
 - Generate a structured short-form script using OpenAI models
 - Generate narration using OpenAI Text-to-Speech (TTS)
@@ -77,18 +78,18 @@ These RSS feeds must be used for news discovery.
 - Ars Technica  
   http://feeds.arstechnica.com/arstechnica/index
 
-- VentureBeat – AI  
+- VentureBeat â€“ AI  
   https://venturebeat.com/category/ai/feed/
 
 ## Business & Technology Economy
 
-- CNBC – Technology  
+- CNBC â€“ Technology  
   https://www.cnbc.com/id/19854910/device/rss/rss.html
 
-- Reuters – Technology  
+- Reuters â€“ Technology  
   https://www.reutersagency.com/feed/?best-topics=technology&post_type=best
 
-- Bloomberg – Technology  
+- Bloomberg â€“ Technology  
   https://feeds.bloomberg.com/technology/news.rss
 
 ## Infrastructure & Semiconductor Focus
@@ -102,7 +103,7 @@ These RSS feeds must be used for news discovery.
 
 ## 4.1 High-Level Pipeline
 
-RSS → Ranking → Extraction → Script → Validation → Image Generation → TTS → Render → Output
+RSS â†’ Theme Selection â†’ Ranking â†’ Extraction â†’ Script â†’ Validation â†’ Image Generation â†’ TTS â†’ Render â†’ Output
 
 ---
 
@@ -124,11 +125,17 @@ The shared state must contain:
 - metrics
 - version_info
 
+State contract note:
+
+- No new selector-specific state field is introduced in this reform.
+- `ranked_items` is currently reused for the Phase 2 selector output (pre-ranking subset), then reused by ranking for ordered results.
+- A dedicated intermediate selector field may be introduced in a later implementation update.
+
 ---
 
 # 6. Agent Definitions
 
-## Agent 1 — RSS Collector
+## Agent 1 â€” RSS Collector
 
 Responsibilities:
 
@@ -138,7 +145,7 @@ Responsibilities:
 - Store candidates in database
 - Run retention cleanup at collector start and delete rows older than 7 days
 - Evaluate post-cleanup DB inventory and skip network fetch when inventory is > 200
-- Load deterministic DB-backed candidates when fetch is skipped so ranking still runs
+- Load deterministic DB-backed candidates when fetch is skipped so theme selection still runs
 - Apply deterministic feed balancing with rotated start index derived from UTC date
 
 RSS Discovery Invariants:
@@ -149,18 +156,51 @@ RSS Discovery Invariants:
 
 ---
 
-## Agent 2 — Relevance Ranker
+## Agent 2 â€” Theme URL Selector
 
 Responsibilities:
 
-- Use OpenAI embeddings
-- Compute semantic similarity to AI & Tech
-- Filter top candidate
-- Penalize generic clickbait
+- Consume RSS candidate list from Agent 1 (up to 50 URLs)
+- Apply user-selected theme (`AI` or `Tech`)
+- Use a low-cost model to select a subset in the 25â€“35 range
+- Forward selected subset to ranking
 
 ---
 
-## Agent 3 — Article Extractor
+## Agent 3 â€” Interestingness Ranker
+
+Responsibilities:
+
+- Receive the 25â€“35 theme-selected candidates from Agent 2
+- Score and rank candidates with a dedicated ranking model (non-embedding)
+- Select one final article (`selected_url`) from the ranked list
+- Apply theme-specific criteria
+
+AI News â€” Top 5 Criteria:
+
+- Human stakes
+- Novelty / "First ever"
+- Controversy or tension
+- Visual or demonstrable proof
+- Speculation about the future
+
+Tech News â€” Top 5 Criteria:
+
+- Immediate real-world impact
+- Credibility of the source
+- Simplicity of the core idea
+- Timeliness / news hook
+- Contrarianism
+
+Ranking invariants:
+
+- Criteria set must match selected theme (`AI` or `Tech`)
+- Ranking and tie-break behavior must be deterministic for identical inputs
+- Embedding-based semantic similarity is not used in this phase
+
+---
+
+## Agent 4 â€” Article Extractor
 
 Responsibilities:
 
@@ -171,14 +211,14 @@ Responsibilities:
 
 ---
 
-## Agent 4 — Script Writer (OpenAI LLM)
+## Agent 5 â€” Script Writer (OpenAI LLM)
 
 Responsibilities:
 
 - Generate strong hook
-- Create 6–10 scenes
+- Create 6â€“10 scenes
 - Limit to 3 image prompts
-- Optimize pacing for 35–60 seconds
+- Optimize pacing for 35â€“60 seconds
 - Include source line
 - Output must strictly follow JSON schema
 
@@ -186,14 +226,14 @@ No free-form text allowed.
 
 ---
 
-## Agent 5 — Script Validator
+## Agent 6 â€” Script Validator
 
 Checks:
 
 - Valid JSON
-- Duration between 35–60 seconds
+- Duration between 35â€“60 seconds
 - Maximum 3 images
-- Scene count between 6–10
+- Scene count between 6â€“10
 - Text length constraints
 
 If validation fails:
@@ -201,7 +241,7 @@ Return structured correction instructions.
 
 ---
 
-## Agent 6 — Image Generator (OpenAI)
+## Agent 7 â€” Image Generator (OpenAI)
 
 Policy:
 
@@ -212,7 +252,7 @@ Policy:
 
 ---
 
-## Agent 7 — TTS Generator (OpenAI)
+## Agent 8 â€” TTS Generator (OpenAI)
 
 Responsibilities:
 
@@ -223,7 +263,7 @@ Responsibilities:
 
 ---
 
-## Agent 8 — Video Renderer (MoviePy)
+## Agent 9 â€” Video Renderer (MoviePy)
 
 Specifications:
 
@@ -238,7 +278,7 @@ Renderer must not invent content.
 
 ---
 
-## Agent 9 — Reporter
+## Agent 10 â€” Reporter
 
 Responsibilities:
 
@@ -254,7 +294,6 @@ Responsibilities:
 
 OpenAI models are used for:
 
-- Embeddings (ranking)
 - Script generation
 - Image generation
 - Text-to-Speech
@@ -282,8 +321,8 @@ The script must contain:
 
 Constraints:
 
-- 35–60 seconds total
-- 6–10 scenes
+- 35â€“60 seconds total
+- 6â€“10 scenes
 - Maximum 3 image prompts
 - Concise narration
 - Hook shorter than 15 words
@@ -293,86 +332,88 @@ Constraints:
 # 9 . Structural Organization & Production Hardening
 
 VideoGeneration/
-├── IMPLEMENTATION_PLAN.md
-├── CONTEXT.md
-├── CHANGELOG.md
-├── README.md
-├── main.py                       # Phase 0 entrypoint (stub deterministic pipeline)
-├── core/
-│   ├── __init__.py
-│   ├── state.py                  # State contract and deterministic initial state
-│   ├── common/
-│   │   ├── __init__.py
-│   │   └── utils.py              # Deterministic utility helpers
-│   ├── config/
-│   │   ├── __init__.py
-│   │   ├── config_loader.py      # Strict config loader
-│   │   └── env_validation.py     # Phase-aware env validation
-│   └── persistence/
-│       ├── __init__.py
-│       └── db.py                 # SQLite initialization and persistence helpers
-├── requirements.txt              # Agregador opcional (referencia requirements/*.txt)
-├── .env                          # API keys (NÃO versionado)
-├── .env.example                  # Env vars esperadas por fase
-├── .gitignore
-│
-├── requirements/                 # Source of truth das dependências
-│   ├── base.txt                  # Runtime mínimo (Phase 0)
-│   ├── dev.txt                   # Ferramentas de desenvolvimento/teste
-│   ├── phase1.txt                # RSS Discovery
-│   ├── phase2.txt                # Relevance Ranking (Embeddings)
-│   ├── phase3.txt                # Article Extraction
-│   ├── phase4.txt                # Script Generation (LLM)
-│   ├── phase5.txt                # Validation Loop
-│   ├── phase6.txt                # Image Generation
-│   ├── phase7.txt                # TTS & Audio
-│   ├── phase8.txt                # Video Rendering
-│   └── phase9.txt                # Production Hardening / Scheduler
-│                 
-│
-├── configs/
-│   ├── rss_feeds.yaml
-│   ├── openai.yaml
-│   └── pipeline.yaml
-│
-├── prompts/
-│   ├── script_writer/
-│   │   └── system.txt
-│   └── validator/
-│       └── system.txt
-│
-├── schemas/
-│   ├── article_schema.json
-│   └── script_schema.json
-│
-├── agents/
-│   ├── __init__.py
-│   ├── rss_collector.py
-│   ├── relevance_ranker.py
-│   ├── article_extractor.py
-│   ├── script_writer.py
-│   ├── script_validator.py
-│   ├── image_generator.py
-│   ├── tts_generator.py
-│   ├── video_renderer.py
-│   └── reporter.py
-│
-├── graphs/
-│   ├── __init__.py
-│   └── news_to_video_graph.py
-│
-├── render/
-│   └── templates/
-│       └── v1/                   # Template versionado
-│           └── template_manifest.json
-│
-├── outputs/
-│   └── .gitkeep
-│
-└── data/
-    └── db/
-        ├── .gitkeep
-        └── app.sqlite            # Gerado em runtime
+â”œâ”€â”€ IMPLEMENTATION_PLAN.md
+â”œâ”€â”€ CONTEXT.md
+â”œâ”€â”€ CHANGELOG.md
+â”œâ”€â”€ README.md
+â”œâ”€â”€ main.py                       # Phase 0 entrypoint (stub deterministic pipeline)
+â”œâ”€â”€ core/
+â”‚   â”œâ”€â”€ __init__.py
+â”‚   â”œâ”€â”€ state.py                  # State contract and deterministic initial state
+â”‚   â”œâ”€â”€ common/
+â”‚   â”‚   â”œâ”€â”€ __init__.py
+â”‚   â”‚   â””â”€â”€ utils.py              # Deterministic utility helpers
+â”‚   â”œâ”€â”€ config/
+â”‚   â”‚   â”œâ”€â”€ __init__.py
+â”‚   â”‚   â”œâ”€â”€ config_loader.py      # Strict config loader
+â”‚   â”‚   â””â”€â”€ env_validation.py     # Phase-aware env validation
+â”‚   â””â”€â”€ persistence/
+â”‚       â”œâ”€â”€ __init__.py
+â”‚       â””â”€â”€ db.py                 # SQLite initialization and persistence helpers
+â”œâ”€â”€ requirements.txt              # Agregador opcional (referencia requirements/*.txt)
+â”œâ”€â”€ .env                          # OpenAI key (root, auto-loaded by python-dotenv; not versioned)
+â”œâ”€â”€ .env.example                  # Env vars esperadas por fase
+â”œâ”€â”€ .gitignore
+â”‚
+â”œâ”€â”€ requirements/                 # Source of truth das dependÃªncias
+â”‚   â”œâ”€â”€ base.txt                  # Runtime mÃ­nimo (Phase 0)
+â”‚   â”œâ”€â”€ dev.txt                   # Ferramentas de desenvolvimento/teste
+â”‚   â”œâ”€â”€ phase1.txt                # RSS Discovery
+â”‚   â”œâ”€â”€ phase2.txt                # Theme URL Selection
+â”‚   â”œâ”€â”€ phase3.txt                # Interestingness Ranking (Criteria-Based)
+â”‚   â”œâ”€â”€ phase4.txt                # Article Extraction
+â”‚   â”œâ”€â”€ phase5.txt                # Script Generation (LLM)
+â”‚   â”œâ”€â”€ phase6.txt                # Validation Loop
+â”‚   â”œâ”€â”€ phase7.txt                # Image Generation
+â”‚   â”œâ”€â”€ phase8.txt                # TTS & Audio
+â”‚   â”œâ”€â”€ phase9.txt                # Video Rendering
+â”‚   â””â”€â”€ phase10.txt               # Production Hardening / Scheduler
+â”‚                 
+â”‚
+â”œâ”€â”€ configs/
+â”‚   â”œâ”€â”€ rss_feeds.yaml
+â”‚   â”œâ”€â”€ openai.yaml
+â”‚   â””â”€â”€ pipeline.yaml
+â”‚
+â”œâ”€â”€ prompts/
+â”‚   â”œâ”€â”€ script_writer/
+â”‚   â”‚   â””â”€â”€ system.txt
+â”‚   â””â”€â”€ validator/
+â”‚       â””â”€â”€ system.txt
+â”‚
+â”œâ”€â”€ schemas/
+â”‚   â”œâ”€â”€ article_schema.json
+â”‚   â””â”€â”€ script_schema.json
+â”‚
+â”œâ”€â”€ agents/
+â”‚   â”œâ”€â”€ __init__.py
+â”‚   â”œâ”€â”€ rss_collector.py
+â”‚   â”œâ”€â”€ theme_url_selector.py
+â”‚   â”œâ”€â”€ relevance_ranker.py
+â”‚   â”œâ”€â”€ article_extractor.py
+â”‚   â”œâ”€â”€ script_writer.py
+â”‚   â”œâ”€â”€ script_validator.py
+â”‚   â”œâ”€â”€ image_generator.py
+â”‚   â”œâ”€â”€ tts_generator.py
+â”‚   â”œâ”€â”€ video_renderer.py
+â”‚   â””â”€â”€ reporter.py
+â”‚
+â”œâ”€â”€ graphs/
+â”‚   â”œâ”€â”€ __init__.py
+â”‚   â””â”€â”€ news_to_video_graph.py
+â”‚
+â”œâ”€â”€ render/
+â”‚   â””â”€â”€ templates/
+â”‚       â””â”€â”€ v1/                   # Template versionado
+â”‚           â””â”€â”€ template_manifest.json
+â”‚
+â”œâ”€â”€ outputs/
+â”‚   â””â”€â”€ .gitkeep
+â”‚
+â””â”€â”€ data/
+    â””â”€â”€ db/
+        â”œâ”€â”€ .gitkeep
+        â””â”€â”€ app.sqlite            # Gerado em runtime
 
 ---
 
@@ -406,6 +447,7 @@ All runs must log:
 - Clean vertical rendering
 - Strong hook and pacing
 - Source citation included
+
 
 
 

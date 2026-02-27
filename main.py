@@ -7,6 +7,8 @@ import logging
 import os
 from pathlib import Path
 
+from dotenv import load_dotenv
+
 from agents.reporter import Reporter
 from core.config.config_loader import ConfigError, load_all_configs
 from core.config.env_validation import validate_environment
@@ -51,6 +53,7 @@ def main() -> int:
         os.environ["VG_MAX_ARTICLES_PER_RUN"] = str(args.max_articles_per_run)
 
     project_root = Path(__file__).resolve().parent
+    load_dotenv(dotenv_path=project_root / ".env", override=False)
 
     try:
         configs = load_all_configs(project_root)

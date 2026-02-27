@@ -24,10 +24,11 @@ Rules:
   - Validation method
   - Version increment (if applicable)
 
-Determinism Rule (Global):
+Determinism & Stability Rule (Global):
 
-- Same input state must always produce the same output artifacts.
-- Any stochastic component (LLM, ranking ties, etc.) must be explicitly controlled and logged.
+- Replay/Test mode must be deterministic: same input state must produce the same output artifacts when model calls are mocked, recorded, or replayed.
+- Production mode may include bounded LLM variance; stability must be enforced with explicit acceptance criteria and deterministic post-scoring policies.
+- Any stochastic component (LLM sampling, ranking ties, retries, fallbacks) must be explicitly controlled where possible and always logged.
 - Model parameters affecting output must be versioned and logged.
 
 ---
@@ -91,15 +92,16 @@ If a phase introduces new third-party libraries, it MUST update `requirements/ph
 | Phase | Name | Status |
 |-------|------|--------|
 | 0 | Bootstrap & Observability | DONE |
-| 1 | RSS Discovery | IN_PROGRESS |
-| 2 | Relevance Ranking | LOCKED |
-| 3 | Article Extraction | LOCKED |
-| 4 | Script Generation | LOCKED |
-| 5 | Validation Loop | LOCKED |
-| 6 | Image Generation | LOCKED |
-| 7 | TTS & Timing | LOCKED |
-| 8 | Video Rendering | LOCKED |
-| 9 | Production Hardening | LOCKED |
+| 1 | RSS Discovery | DONE |
+| 2 | Theme URL Selection | IN PROGRESS |
+| 3 | Interestingness Ranking | LOCKED |
+| 4 | Article Extraction | LOCKED |
+| 5 | Script Generation | LOCKED |
+| 6 | Validation Loop | LOCKED |
+| 7 | Image Generation | LOCKED |
+| 8 | TTS & Timing | LOCKED |
+| 9 | Video Rendering | LOCKED |
+| 10 | Production Hardening | LOCKED |
 
 ---
 
@@ -148,7 +150,7 @@ Create minimal runnable pipeline skeleton with logging, config loading, database
 - Create dependency layout:
   - `requirements/base.txt`
   - `requirements/dev.txt`
-  - `requirements/phase1.txt` … `requirements/phase9.txt`
+  - `requirements/phase1.txt` … `requirements/phase10.txt`
 - Create `.env.example`.
 - Implement phase-aware env validation.
 - Create and populate `.gitignore`.
@@ -226,28 +228,85 @@ Fetch RSS feeds defined in `configs/rss_feeds.yaml`, normalize entries, deduplic
 
 ---
 
-# Phase 2 — Relevance Ranking
+# Phase 2 — Theme URL Selection
 
 ## Goal
 
-Rank RSS items by semantic relevance to AI & Tech.
+Select a theme-aligned subset of candidate URLs before final interestingness ranking.
 
 ## Scope
 
 - Update `requirements/phase2.txt`.
+- Implement theme_url_selector.py.
+- Consume up to 50 RSS candidate URLs produced by Phase 1.
+- Accept user theme input constrained to `AI` or `Tech`.
+- Use a low-cost model to filter candidate URLs into a subset in the 25–35 range.
+- Keep selector policy range-based (25–35) until an exact fixed default target is formally locked.
+- When input is below the lower bound, pass through all valid candidates and emit a policy-warning metric.
+- Apply deterministic tie-breaking and stable ordering for identical inputs.
+- Forward selected subset to Phase 3 for final article selection.
+
+## Deliverables
+
+- theme_selected_urls.json.
+- ranked_items pre-ranking subset handoff contract (reused field until a dedicated intermediate field is introduced).
+
+## Exit Criteria
+
+- Deterministic replay subset for identical inputs (mocked/recorded selector path).
+- Production stability criterion defined and verified with repeated-run overlap checks under controlled score variance.
+- Theme filter policy (`AI` or `Tech`) enforced.
+- Output cardinality policy enforced:
+  - `< 25` input -> pass-through with warning.
+  - `25..35` input -> pass-through.
+  - `> 35` input -> bounded target selection (default 30).
+- Dependencies isolated.
+- Model parameters logged.
+- README updated accurately.
+
+---
+
+# Phase 3 — Interestingness Ranking
+
+## Goal
+
+Choose the single most interesting article from the Phase 2 subset using theme-specific criteria.
+
+## Scope
+
+- Update `requirements/phase3.txt`.
 - Implement relevance_ranker.py.
-- Use OpenAI embeddings.
+- Consume only the 25–35 URLs selected by Phase 2.
+- Use a dedicated ranking model (non-embedding approach) to score candidates.
+- Apply deterministic criteria scoring by theme:
+  - `AI` criteria:
+    - Human stakes.
+    - Novelty / first-ever capability.
+    - Controversy or tension.
+    - Visual or demonstrable proof.
+    - Speculation about the future.
+  - `Tech` criteria:
+    - Immediate real-world impact.
+    - Credibility of the source.
+    - Simplicity of the core idea.
+    - Timeliness / news hook.
+    - Contrarianism.
+- Select exactly one `selected_url` as final winner.
 - Ensure deterministic tie-breaking.
-- Log embedding model version.
+- Log ranking model version and criteria weights/policy.
 
 ## Deliverables
 
 - ranked_items.json.
 - selection.json.
+- ranking_criteria_report.json.
 
 ## Exit Criteria
 
 - Deterministic ranking for identical inputs.
+- Exactly one final selection emitted from Phase 2 subset.
+- No embedding-based ranking in this phase.
+- Criteria-based scoring policy applied according to selected theme.
 - Stable selection behavior.
 - Dependencies isolated.
 - Model parameters logged.
@@ -255,7 +314,7 @@ Rank RSS items by semantic relevance to AI & Tech.
 
 ---
 
-# Phase 3 — Article Extraction
+# Phase 4 — Article Extraction
 
 ## Goal
 
@@ -263,7 +322,7 @@ Extract clean structured content from selected article.
 
 ## Scope
 
-- Update `requirements/phase3.txt`.
+- Update `requirements/phase4.txt`.
 - Implement article_extractor.py.
 - Extract raw HTML for auditing (`article_raw.html`).
 - Produce cleaned structured output (`article.json`).
@@ -293,7 +352,7 @@ IMPORTANT:
 
 ---
 
-# Phase 4 — Script Generation (LLM)
+# Phase 5 — Script Generation (LLM)
 
 ## Goal
 
@@ -301,7 +360,7 @@ Generate structured short-form script strictly following JSON schema.
 
 ## Scope
 
-- Update `requirements/phase4.txt`.
+- Update `requirements/phase5.txt`.
 - Implement script_writer.py.
 - Use ONLY `article.json` as input.
 - Enforce strict JSON schema.
@@ -322,7 +381,7 @@ Generate structured short-form script strictly following JSON schema.
 
 ---
 
-# Phase 5 — Script Validation Loop
+# Phase 6 — Script Validation Loop
 
 ## Goal
 
@@ -330,7 +389,7 @@ Validate script and apply deterministic retry loop if necessary.
 
 ## Scope
 
-- Update `requirements/phase5.txt`.
+- Update `requirements/phase6.txt`.
 - Implement script_validator.py.
 - Validate:
   - JSON validity
@@ -356,7 +415,7 @@ Validate script and apply deterministic retry loop if necessary.
 
 ---
 
-# Phase 6 — Image Generation
+# Phase 7 — Image Generation
 
 ## Goal
 
@@ -364,7 +423,7 @@ Generate up to 3 vertical AI images.
 
 ## Scope
 
-- Update `requirements/phase6.txt`.
+- Update `requirements/phase7.txt`.
 - Implement image_generator.py.
 - Always generate images.
 - Maximum 3 unique prompts.
@@ -387,7 +446,7 @@ Generate up to 3 vertical AI images.
 
 ---
 
-# Phase 7 — TTS & Duration Control
+# Phase 8 — TTS & Duration Control
 
 ## Goal
 
@@ -395,7 +454,7 @@ Generate narration and verify duration compliance.
 
 ## Scope
 
-- Update `requirements/phase7.txt`.
+- Update `requirements/phase8.txt`.
 - Implement tts_generator.py.
 - Generate single combined narration file.
 - Measure real duration.
@@ -415,7 +474,7 @@ Generate narration and verify duration compliance.
 
 ---
 
-# Phase 8 — Video Rendering
+# Phase 9 — Video Rendering
 
 ## Goal
 
@@ -423,7 +482,7 @@ Render deterministic vertical video using MoviePy template v1.
 
 ## Scope
 
-- Update `requirements/phase8.txt`.
+- Update `requirements/phase9.txt`.
 - Implement video_renderer.py.
 - Use only template v1.
 - Enforce:
@@ -447,7 +506,7 @@ Render deterministic vertical video using MoviePy template v1.
 
 ---
 
-# Phase 9 — Production Hardening
+# Phase 10 — Production Hardening
 
 ## Goal
 
@@ -455,6 +514,7 @@ Ensure system stability and production-readiness.
 
 ## Scope
 
+- Update `requirements/phase10.txt`.
 - Scheduler integration.
 - Cost reports.
 - 7-day logging.

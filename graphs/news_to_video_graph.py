@@ -10,6 +10,7 @@ from agents import (
     image_generator,
     relevance_ranker,
     rss_collector,
+    theme_url_selector,
     script_validator,
     script_writer,
     tts_generator,
@@ -32,6 +33,7 @@ NodeFn = Callable[[PipelineState], PipelineState]
 
 NODE_FLOW: tuple[tuple[str, NodeFn], ...] = (
     ("rss_collector", rss_collector.run),
+    ("theme_url_selector", theme_url_selector.run),
     ("relevance_ranker", relevance_ranker.run),
     ("article_extractor", article_extractor.run),
     ("script_writer", script_writer.run),

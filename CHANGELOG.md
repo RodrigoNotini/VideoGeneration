@@ -1,4 +1,83 @@
 # CHANGELOG
+## 0.2.5 - Phase 2 Criteria Reframe: Deterministic Replay + Production Stability
+### What Changed
+- Updated global determinism policy in `IMPLEMENTATION_PLAN.md` to distinguish:
+  - deterministic replay/test behavior, and
+  - bounded-variance production behavior with explicit stability criteria.
+- Updated `IMPLEMENTATION_PLAN.md` Phase 2 exit criteria:
+  - replaced strict identical-output requirement for live model runs with:
+    - deterministic replay subset checks, and
+    - repeated-run overlap stability checks under controlled score variance.
+- Added Phase 2 test coverage in `tests/test_phase2_theme_selector.py`:
+  - `test_stability_overlap_under_controlled_score_variance`.
+- Updated `README.md` Phase 2 description to reflect replay determinism and production stability.
+
+### Why
+- Phase 2 uses an LLM-based selector, where strict bit-for-bit production determinism is not a realistic contract for live calls.
+- Replay determinism keeps CI/debugging reproducible while stability checks keep production quality bounded and observable.
+
+### Expected Impact
+- More realistic and enforceable Phase 2 contract for LLM-backed selection.
+- Better alignment between planning docs, operational docs, and executable tests.
+
+### Validation Method
+- Run:
+  - `python -m unittest discover -s tests -p "test_*.py"`
+
+## 0.2.4 - Documentation Reform: Criteria-Based Agent 3 Ranking
+### What Changed
+- Reformulated `Agent 3` in documentation from embedding-based relevance ranking to criteria-based interestingness ranking.
+- Updated `IMPLEMENTATION_PLAN.md` Phase 3 from `Relevance Ranking` to `Interestingness Ranking`.
+- Replaced OpenAI embedding references in Phase 3 scope with a dedicated non-embedding model policy.
+- Added explicit theme criteria blocks used by Agent 3:
+  - `AI News` Top 5: Human stakes; Novelty/"First ever"; Controversy/tension; Visual proof; Future speculation.
+  - `Tech News` Top 5: Immediate impact; Source credibility; Simplicity; Timeliness/news hook; Contrarianism.
+- Updated architecture mapping notes in `CONTEXT.md` (`phase3.txt` comment and model-usage policy) to remove embedding ranking references.
+
+### Why
+- Align documentation with the updated architecture where Agent 3 selects the single most interesting article from the 25–35 Phase 2 subset using explicit editorial criteria.
+
+### Expected Impact
+- Clear implementation contract for Agent 3 behavior and model choice.
+- Better consistency between theme selection (Phase 2) and final article selection (Phase 3).
+- Removal of ambiguity caused by outdated embedding-based ranking language.
+
+### Validation Method
+- Manual consistency check across `IMPLEMENTATION_PLAN.md`, `CONTEXT.md`, and `CHANGELOG.md` for:
+  - No active references to OpenAI embeddings for Agent 3 ranking.
+  - Phase 3 wording aligned to criteria-based interestingness ranking.
+  - Presence of both AI and Tech Top-5 criteria blocks in Agent 3 documentation.
+
+### Scope Clarification
+- Documentation/specification update only.
+- No runtime code behavior changed in this step.
+
+## 0.2.3 - Documentation Reform: Selector Phase Reindex
+### What Changed
+- Added documentation for a new `Phase 2 — Theme URL Selection` between RSS discovery and ranking.
+- Reindexed downstream implementation phases from `2..9` to `3..10` in planning and architecture docs.
+- Updated workflow and agent ordering in context documentation to `RSS → Theme Selection → Ranking → Extraction → Script → Validation → Image Generation → TTS → Render → Output`.
+- Added explicit state-contract note that selector output currently reuses `ranked_items` pre-ranking, with a dedicated intermediate field deferred to a future implementation step.
+
+### Why
+- Reflect the architecture change that inserts a theme selector before ranking and remove ambiguity in sequencing and ownership.
+
+### Expected Impact
+- Clearer planning and execution order for upcoming implementation work.
+- Consistent phase and agent numbering across documentation artifacts.
+- Reduced risk of misaligned implementation against outdated docs.
+
+### Validation Method
+- Manual consistency check across `IMPLEMENTATION_PLAN.md`, `CONTEXT.md`, and `CHANGELOG.md` for:
+  - Phase naming and numbering alignment.
+  - Agent numbering/order alignment with pipeline flow.
+  - Final phase consistently documented as `Phase 10 — Production Hardening`.
+  - Absence of legacy references to the old phase-2 ranking heading.
+
+### Scope Clarification
+- Documentation/specification update only.
+- No runtime code behavior changed in this step.
+
 ## 0.2.2 - Phase 1 adjustments 
 ### What Changed
 - Reopened Phase 1 and set it to `IN_PROGRESS` in `IMPLEMENTATION_PLAN.md`.

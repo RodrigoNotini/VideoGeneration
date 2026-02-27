@@ -1,19 +1,30 @@
-name: phase1_rss_discovery
-phase: 1
-phase_name: "RSS Discovery"
+name: phase2_theme_url_selection
+phase: 2
+phase_name: "Theme URL Selection"
 topic: "AI & Tech Daily Briefing"
+theme: "AI"
 target_platform: "youtube_shorts"
 target_duration_sec: 45
 max_articles_per_run: 50
 rss_skip_fetch_threshold: 200
 rss_retention_days: 7
 rss_feed_rotation_basis: "utc_date"
+phase2_selector:
+  model: "gpt-4.1-mini"
+  prompt_version: "phase2-theme-selector-v1"
+  target_count: 30
+  lower_bound: 25
+  upper_bound: 35
+  tie_break_policy: "published_at_desc_then_canonical_url_asc"
+  deterministic:
+    temperature: 0.0
+    top_p: 1.0
 output_dir: "outputs"
 database_path: "data/db/app.sqlite"
-deterministic_seed: "phase1-seed-v1"
+deterministic_seed: "phase2-seed-v1"
 deterministic_started_at: "2026-01-01T00:00:00Z"
 versions:
-  prompt_version: "phase1-rss-discovery"
-  schema_version: "phase1-rss-discovery"
+  prompt_version: "phase2-theme-selector-v1"
+  schema_version: "phase2-theme-selector-v1"
   template_version: "v1-placeholder"
-  model_version: "phase1-no-model"
+  model_version: "phase2-gpt-4.1-mini"
