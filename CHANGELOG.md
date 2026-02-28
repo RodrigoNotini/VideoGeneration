@@ -1,4 +1,66 @@
 # CHANGELOG
+## 0.2.6 - Source Access Policy Architecture (full_scrape_allowed vs metadata_only)
+### What Changed
+- Introduced a deterministic source access policy contract with shared runtime constants:
+  - `full_scrape_allowed`
+  - `metadata_only`
+- Updated `configs/rss_feeds.yaml` feed schema:
+  - `scrape_policy` is now required for every feed.
+  - Initial mapping:
+    - `Wired` -> `metadata_only`
+    - `Bloomberg - Technology` -> `metadata_only`
+    - All other current feeds -> `full_scrape_allowed`
+- Extended strict RSS config validation in `core/config/config_loader.py`:
+  - Missing `scrape_policy` now fails config validation.
+  - Invalid enum values now fail config validation.
+- Extended `rss_items` SQLite schema in `core/persistence/db.py`:
+  - Added `scrape_policy TEXT NOT NULL DEFAULT 'full_scrape_allowed'`.
+  - Added idempotent migration for pre-existing DBs without the column.
+  - Added policy sync helper to refresh existing rows by source name from current config.
+  - Updated insert/fetch helpers to write/read `scrape_policy`.
+- Updated Phase 1 collector (`agents/rss_collector.py`):
+  - Resolves per-feed policy and propagates to normalized/state items.
+  - Syncs DB policy values after retention cleanup and before threshold skip decision.
+  - Preserves policy in skip-fetch path via DB-backed candidates.
+  - Adds policy observability counters/flags for feed and item-level policy distribution.
+- Updated Phase 2 selector (`agents/theme_url_selector.py`) and Phase 3 ranker (`agents/relevance_ranker.py`):
+  - Preserve and propagate `scrape_policy` through candidate normalization and artifacts.
+- Updated Phase 4 extractor contract (`agents/article_extractor.py`):
+  - Resolves selected policy from ranked metadata with fallback lookup.
+  - Enforces hard block for `metadata_only` sources:
+    - no full extraction path attempt
+    - deterministic metadata-only article payload
+    - explicit policy-block metrics/flags
+- Added/updated tests:
+  - `tests/test_source_policy_contract.py`
+  - `tests/test_phase1_exit_criteria.py`
+  - `tests/test_phase2_theme_selector.py`
+  - `tests/test_phase3_relevance_ranker.py`
+
+### Why
+- Enforce explicit, deterministic source handling for paywalled or restricted sources without changing ranking logic.
+- Guarantee policy metadata continuity from discovery to extraction so enforcement is reliable and auditable.
+- Preserve backward-safe test/runtime behavior for patched feed payloads while keeping real config validation strict.
+
+### Expected Impact
+- `scrape_policy` is now part of the public item payload contract across:
+  - `state.rss_items[*]`
+  - Phase 2 output subset (`state.ranked_items[*]`)
+  - Phase 3 ranked output (`state.ranked_items[*]`)
+  - `outputs/rss_items.json`
+  - `outputs/theme_selected_urls.json`
+  - `outputs/ranked_items.json`
+  - `outputs/selection.json`
+- Existing DBs migrate automatically and keep policies aligned with the current feed config.
+- Phase 4 now blocks extraction deterministically for `metadata_only` selections.
+
+### Validation Method
+- Run:
+  - `python -m unittest discover -s tests -p "test_*.py"`
+- Verify production artifacts include expected policy fields and Phase 4 flags:
+  - `outputs/rss_items.json`
+  - `outputs/selection.json`
+
 ## 0.2.5 - Phase 2 Criteria Reframe: Deterministic Replay + Production Stability
 ### What Changed
 - Updated global determinism policy in `IMPLEMENTATION_PLAN.md` to distinguish:

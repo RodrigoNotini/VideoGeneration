@@ -14,7 +14,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from core.common.utils import write_json
+from core.common.utils import resolve_scrape_policy, write_json
 from core.config.config_loader import load_all_configs
 from core.state import PipelineState, copy_state
 
@@ -89,6 +89,7 @@ class Candidate:
     canonical_url: str
     title: str
     source: str
+    scrape_policy: str
     published_at: str
     summary: str
 
@@ -280,6 +281,7 @@ def _normalize_candidates(items: list[dict[str, Any]]) -> tuple[list[Candidate],
             continue
 
         source = str(item.get("source", "")).strip()
+        scrape_policy = resolve_scrape_policy(item.get("scrape_policy"), fallback_to_full=True)
         published_at = str(item.get("published_at", "")).strip()
         summary = str(item.get("summary", "")).strip()
         candidates.append(
@@ -289,6 +291,7 @@ def _normalize_candidates(items: list[dict[str, Any]]) -> tuple[list[Candidate],
                 canonical_url=url,
                 title=title,
                 source=source,
+                scrape_policy=scrape_policy,
                 published_at=published_at,
                 summary=summary,
             )
@@ -608,6 +611,7 @@ def _build_selected_items(scored_items: list[ScoredCandidate], output_count: int
                 "url": item.candidate.url,
                 "title": item.candidate.title,
                 "source": item.candidate.source,
+                "scrape_policy": item.candidate.scrape_policy,
                 "published_at": item.candidate.published_at,
                 "theme_match_score": item.score,
                 "selection_reason": item.reason,

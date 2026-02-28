@@ -1,6 +1,7 @@
 api_key_env_var: "OPENAI_API_KEY"
 models:
   theme_selector: "gpt-4.1-mini"
+  interestingness_ranker: "gpt-4.1-mini"
   embeddings: "phase0-placeholder-embeddings"
   script_writer: "phase0-placeholder-script"
   image_generator: "phase0-placeholder-image"

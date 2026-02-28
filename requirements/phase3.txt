@@ -1,1 +1,3 @@
-﻿# Phase 3 dependencies (Article Extraction)
+# Phase 3 dependencies (Interestingness Ranking)
+# No additional third-party dependencies are introduced in Phase 3.
+# Phase 3 reuses packages already introduced in base/phase2 requirements.

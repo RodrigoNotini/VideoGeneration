@@ -4,7 +4,6 @@ from __future__ import annotations
 
 import json
 import shutil
-import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -13,13 +12,17 @@ from unittest.mock import patch
 
 from agents import relevance_ranker, theme_url_selector
 from agents.reporter import Reporter, run as reporter_agent_run
+from core.common.utils import SCRAPE_POLICY_FULL, SCRAPE_POLICY_METADATA_ONLY
 from core.state import PipelineState, make_initial_state
 from graphs import news_to_video_graph
 
 
 class Phase2ThemeSelectorTests(unittest.TestCase):
     def _make_temp_root(self) -> Path:
-        root = Path(tempfile.mkdtemp(prefix="phase2-selector-"))
+        base = Path(__file__).resolve().parent / ".tmp"
+        base.mkdir(parents=True, exist_ok=True)
+        root = base / f"phase2-selector-{time.time_ns()}"
+        root.mkdir(parents=True, exist_ok=False)
 
         def _cleanup() -> None:
             for _ in range(5):
@@ -96,6 +99,7 @@ class Phase2ThemeSelectorTests(unittest.TestCase):
                     "url": f"https://example.com/story-{index:03d}",
                     "title": f"Story {index:03d}",
                     "source": "ExampleFeed",
+                    "scrape_policy": SCRAPE_POLICY_FULL,
                     "published_at": f"2026-01-{day:02d}T00:00:00Z",
                 }
             )
@@ -434,6 +438,20 @@ class Phase2ThemeSelectorTests(unittest.TestCase):
         self.assertEqual("phase2-theme-selector-v1", artifact["selector_model"]["prompt_version"])
         self.assertEqual("published_at_desc_then_canonical_url_asc", artifact["tie_break_policy"])
         self.assertIn("run_metadata", artifact)
+
+    def test_scrape_policy_is_propagated_to_phase2_outputs(self) -> None:
+        root = self._make_temp_root()
+        rss_items = self._make_rss_items(5)
+        rss_items[0]["scrape_policy"] = SCRAPE_POLICY_METADATA_ONLY
+
+        final_state = self._run_selector(root=root, theme="AI", rss_items=rss_items)
+
+        self.assertIn("scrape_policy", final_state["ranked_items"][0])
+        self.assertEqual(SCRAPE_POLICY_METADATA_ONLY, final_state["ranked_items"][0]["scrape_policy"])
+
+        artifact = json.loads((root / "outputs" / "theme_selected_urls.json").read_text(encoding="utf-8"))
+        self.assertIn("scrape_policy", artifact["selected_items"][0])
+        self.assertEqual(SCRAPE_POLICY_METADATA_ONLY, artifact["selected_items"][0]["scrape_policy"])
 
 
 if __name__ == "__main__":

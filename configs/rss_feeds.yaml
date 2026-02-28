@@ -1,21 +1,31 @@
 feeds:
   - name: TechCrunch
     url: https://techcrunch.com/feed/
+    scrape_policy: full_scrape_allowed
   - name: The Verge
     url: https://www.theverge.com/rss/index.xml
+    scrape_policy: full_scrape_allowed
   - name: Wired
     url: https://www.wired.com/feed/rss
+    scrape_policy: metadata_only
   - name: MIT Technology Review
     url: https://www.technologyreview.com/feed/
+    scrape_policy: full_scrape_allowed
   - name: Ars Technica
     url: http://feeds.arstechnica.com/arstechnica/index
+    scrape_policy: full_scrape_allowed
   - name: VentureBeat - AI
     url: https://venturebeat.com/category/ai/feed/
+    scrape_policy: full_scrape_allowed
   - name: CNBC - Technology
     url: https://www.cnbc.com/id/19854910/device/rss/rss.html
+    scrape_policy: full_scrape_allowed
   - name: Reuters - Technology
     url: https://www.reutersagency.com/feed/?best-topics=technology&post_type=best
+    scrape_policy: full_scrape_allowed
   - name: Bloomberg - Technology
     url: https://feeds.bloomberg.com/technology/news.rss
+    scrape_policy: metadata_only
   - name: Semiconductor Engineering
     url: https://semiengineering.com/feed/
+    scrape_policy: full_scrape_allowed

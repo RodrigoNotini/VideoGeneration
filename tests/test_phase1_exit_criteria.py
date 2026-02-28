@@ -5,7 +5,6 @@ from __future__ import annotations
 import os
 import sqlite3
 import shutil
-import tempfile
 import time
 import unittest
 from pathlib import Path
@@ -13,14 +12,17 @@ from typing import Any, Callable
 from unittest.mock import patch
 
 from agents import rss_collector
-from core.common.utils import sha256_text
-from core.persistence.db import initialize_database
+from core.common.utils import SCRAPE_POLICY_FULL, SCRAPE_POLICY_METADATA_ONLY, sha256_text
+from core.persistence.db import initialize_database, sync_rss_item_policies_by_source
 from core.state import PipelineState, make_initial_state
 
 
 class Phase1ExitCriteriaTests(unittest.TestCase):
     def _make_temp_root(self) -> Path:
-        root = Path(tempfile.mkdtemp(prefix="phase1-exit-criteria-"))
+        base = Path(__file__).resolve().parent / ".tmp"
+        base.mkdir(parents=True, exist_ok=True)
+        root = base / f"phase1-exit-criteria-{time.time_ns()}"
+        root.mkdir(parents=True, exist_ok=False)
 
         def _cleanup() -> None:
             for _ in range(5):
@@ -51,7 +53,7 @@ class Phase1ExitCriteriaTests(unittest.TestCase):
         self,
         *,
         root: Path,
-        feeds: list[dict[str, str]],
+        feeds: list[dict[str, Any]],
         entries_by_feed_url: dict[str, list[dict[str, Any]]] | None = None,
         max_articles_per_run: int = 50,
         rss_skip_fetch_threshold: int = 200,
@@ -99,8 +101,8 @@ class Phase1ExitCriteriaTests(unittest.TestCase):
                 connection.executemany(
                     """
                     INSERT OR IGNORE INTO rss_items (
-                        url, title, title_hash, source, published_at, discovered_at
-                    ) VALUES (?, ?, ?, ?, ?, ?)
+                        url, title, title_hash, source, scrape_policy, published_at, discovered_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
@@ -108,6 +110,7 @@ class Phase1ExitCriteriaTests(unittest.TestCase):
                             row["title"],
                             row["title_hash"],
                             row["source"],
+                            row.get("scrape_policy", SCRAPE_POLICY_FULL),
                             row["published_at"],
                             row["discovered_at"],
                         )
@@ -125,12 +128,14 @@ class Phase1ExitCriteriaTests(unittest.TestCase):
         source: str,
         published_at: str,
         discovered_at: str,
+        scrape_policy: str = SCRAPE_POLICY_FULL,
     ) -> dict[str, str]:
         return {
             "url": url,
             "title": title,
             "title_hash": sha256_text(title.lower()),
             "source": source,
+            "scrape_policy": scrape_policy,
             "published_at": published_at,
             "discovered_at": discovered_at,
         }
@@ -140,6 +145,15 @@ class Phase1ExitCriteriaTests(unittest.TestCase):
         with sqlite3.connect(db_path.as_posix()) as connection:
             row = connection.execute("SELECT COUNT(*) FROM rss_items WHERE url = ?", (url,)).fetchone()
         return bool(row and int(row[0]) > 0)
+
+    def _db_scrape_policy(self, root: Path, url: str) -> str:
+        db_path = root / "data" / "db" / "app.sqlite"
+        with sqlite3.connect(db_path.as_posix()) as connection:
+            row = connection.execute(
+                "SELECT scrape_policy FROM rss_items WHERE url = ?",
+                (url,),
+            ).fetchone()
+        return str(row[0]) if row else ""
 
     def test_exit_criteria_rss_fetching_verified(self) -> None:
         root = self._make_temp_root()
@@ -531,6 +545,146 @@ class Phase1ExitCriteriaTests(unittest.TestCase):
 
         self.assertEqual(1, len(final_state["rss_items"]))
         self.assertEqual(1, final_state["metrics"]["counters"]["rss_items_target_count"])
+
+    def test_scrape_policy_fetch_path_persists_to_state_and_db(self) -> None:
+        root = self._make_temp_root()
+        feed_url = "https://feed.example.com/policy-fetch"
+        final_state, _ = self._run_collector(
+            root=root,
+            feeds=[{"name": "Wired", "url": feed_url, "scrape_policy": SCRAPE_POLICY_METADATA_ONLY}],
+            entries_by_feed_url={
+                feed_url: [
+                    {
+                        "title": "Policy Story",
+                        "link": "https://example.com/policy-fetch-story",
+                    }
+                ]
+            },
+            rss_skip_fetch_threshold=999,
+        )
+
+        self.assertEqual(SCRAPE_POLICY_METADATA_ONLY, final_state["rss_items"][0]["scrape_policy"])
+        self.assertEqual(
+            SCRAPE_POLICY_METADATA_ONLY,
+            self._db_scrape_policy(root, "https://example.com/policy-fetch-story"),
+        )
+
+    def test_skip_fetch_path_preserves_scrape_policy_from_db(self) -> None:
+        root = self._make_temp_root()
+        self._seed_rss_items(
+            root,
+            [
+                self._seed_row(
+                    url=f"https://seed.example.com/policy-{index:03d}",
+                    title=f"Policy Seed Story {index:03d}",
+                    source="Wired",
+                    scrape_policy=SCRAPE_POLICY_METADATA_ONLY,
+                    published_at=f"2026-01-{(index % 28) + 1:02d}T00:00:00Z",
+                    discovered_at="2026-01-05T00:00:00Z",
+                )
+                for index in range(205)
+            ],
+        )
+
+        final_state, fetch_calls = self._run_collector(
+            root=root,
+            feeds=[{"name": "Wired", "url": "https://feed.example.com/wired", "scrape_policy": SCRAPE_POLICY_METADATA_ONLY}],
+            entries_by_feed_url={},
+            now_iso="2026-01-08T00:00:00Z",
+        )
+
+        self.assertEqual([], fetch_calls)
+        self.assertTrue(final_state["metrics"]["flags"]["rss_fetch_skipped_threshold_hit"])
+        self.assertEqual(
+            50,
+            sum(1 for item in final_state["rss_items"] if item["scrape_policy"] == SCRAPE_POLICY_METADATA_ONLY),
+        )
+
+    def test_db_policy_migration_and_sync_is_idempotent(self) -> None:
+        root = self._make_temp_root()
+        db_path = root / "data" / "db" / "app.sqlite"
+        db_path.parent.mkdir(parents=True, exist_ok=True)
+
+        with sqlite3.connect(db_path.as_posix()) as connection:
+            with connection:
+                connection.execute(
+                    """
+                    CREATE TABLE rss_items (
+                        id INTEGER PRIMARY KEY AUTOINCREMENT,
+                        url TEXT NOT NULL UNIQUE,
+                        title TEXT NOT NULL,
+                        title_hash TEXT NOT NULL,
+                        source TEXT NOT NULL,
+                        published_at TEXT,
+                        discovered_at TEXT NOT NULL
+                    )
+                    """
+                )
+                rows = [
+                    (
+                        "https://example.com/wired",
+                        "Wired Story",
+                        sha256_text("wired story"),
+                        "Wired",
+                        "2026-01-01T00:00:00Z",
+                        "2026-01-01T00:00:00Z",
+                    ),
+                    (
+                        "https://example.com/bloomberg",
+                        "Bloomberg Story",
+                        sha256_text("bloomberg story"),
+                        "Bloomberg - Technology",
+                        "2026-01-01T00:00:00Z",
+                        "2026-01-01T00:00:00Z",
+                    ),
+                    (
+                        "https://example.com/techcrunch",
+                        "TechCrunch Story",
+                        sha256_text("techcrunch story"),
+                        "TechCrunch",
+                        "2026-01-01T00:00:00Z",
+                        "2026-01-01T00:00:00Z",
+                    ),
+                ]
+                connection.executemany(
+                    """
+                    INSERT INTO rss_items (url, title, title_hash, source, published_at, discovered_at)
+                    VALUES (?, ?, ?, ?, ?, ?)
+                    """,
+                    rows,
+                )
+
+        connection = initialize_database(db_path)
+        try:
+            # Run twice to verify idempotency.
+            initialize_database(db_path).close()
+            updated_count = sync_rss_item_policies_by_source(
+                connection,
+                {
+                    "Wired": SCRAPE_POLICY_METADATA_ONLY,
+                    "Bloomberg - Technology": SCRAPE_POLICY_METADATA_ONLY,
+                    "TechCrunch": SCRAPE_POLICY_FULL,
+                },
+            )
+            sync_rss_item_policies_by_source(
+                connection,
+                {
+                    "Wired": SCRAPE_POLICY_METADATA_ONLY,
+                    "Bloomberg - Technology": SCRAPE_POLICY_METADATA_ONLY,
+                    "TechCrunch": SCRAPE_POLICY_FULL,
+                },
+            )
+            rows = connection.execute(
+                "SELECT source, scrape_policy FROM rss_items ORDER BY source ASC"
+            ).fetchall()
+        finally:
+            connection.close()
+
+        by_source = {str(row[0]): str(row[1]) for row in rows}
+        self.assertGreaterEqual(updated_count, 2)
+        self.assertEqual(SCRAPE_POLICY_METADATA_ONLY, by_source["Wired"])
+        self.assertEqual(SCRAPE_POLICY_METADATA_ONLY, by_source["Bloomberg - Technology"])
+        self.assertEqual(SCRAPE_POLICY_FULL, by_source["TechCrunch"])
 
 
 if __name__ == "__main__":

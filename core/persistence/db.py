@@ -6,7 +6,12 @@ import sqlite3
 from pathlib import Path
 from typing import Any
 
-from core.common.utils import canonical_json, sha256_text
+from core.common.utils import (
+    SCRAPE_POLICY_FULL,
+    canonical_json,
+    resolve_scrape_policy,
+    sha256_text,
+)
 
 
 SCHEMA_STATEMENTS: tuple[str, ...] = (
@@ -17,6 +22,7 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
         title TEXT NOT NULL,
         title_hash TEXT NOT NULL,
         source TEXT NOT NULL,
+        scrape_policy TEXT NOT NULL DEFAULT 'full_scrape_allowed',
         published_at TEXT,
         discovered_at TEXT NOT NULL
     )
@@ -49,6 +55,24 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
 )
 
 
+def _ensure_rss_items_scrape_policy_column(connection: sqlite3.Connection) -> None:
+    rows = connection.execute("PRAGMA table_info(rss_items)").fetchall()
+    columns = {str(row[1]) for row in rows}
+    if "scrape_policy" not in columns:
+        connection.execute(
+            "ALTER TABLE rss_items "
+            "ADD COLUMN scrape_policy TEXT NOT NULL DEFAULT 'full_scrape_allowed'"
+        )
+    connection.execute(
+        """
+        UPDATE rss_items
+        SET scrape_policy = ?
+        WHERE scrape_policy IS NULL OR TRIM(scrape_policy) = ''
+        """,
+        (SCRAPE_POLICY_FULL,),
+    )
+
+
 def initialize_database(db_path: Path) -> sqlite3.Connection:
     """Create DB and all required Phase 0 tables idempotently."""
     db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -56,6 +80,7 @@ def initialize_database(db_path: Path) -> sqlite3.Connection:
     with connection:
         for statement in SCHEMA_STATEMENTS:
             connection.execute(statement)
+        _ensure_rss_items_scrape_policy_column(connection)
     return connection
 
 
@@ -119,6 +144,7 @@ def insert_rss_items(connection: sqlite3.Connection, items: list[dict[str, Any]]
             item["title"],
             item["title_hash"],
             item["source"],
+            resolve_scrape_policy(item.get("scrape_policy"), fallback_to_full=True),
             item.get("published_at", ""),
             item["discovered_at"],
         )
@@ -130,8 +156,8 @@ def insert_rss_items(connection: sqlite3.Connection, items: list[dict[str, Any]]
         connection.executemany(
             """
             INSERT OR IGNORE INTO rss_items (
-                url, title, title_hash, source, published_at, discovered_at
-            ) VALUES (?, ?, ?, ?, ?, ?)
+                url, title, title_hash, source, scrape_policy, published_at, discovered_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?)
             """,
             values,
         )
@@ -169,6 +195,7 @@ def fetch_rss_items_for_ranking(connection: sqlite3.Connection, limit: int) -> l
             title,
             title_hash,
             source,
+            scrape_policy,
             COALESCE(published_at, '') AS published_at,
             discovered_at
         FROM rss_items
@@ -190,8 +217,50 @@ def fetch_rss_items_for_ranking(connection: sqlite3.Connection, limit: int) -> l
             "title": str(row[1]),
             "title_hash": str(row[2]),
             "source": str(row[3]),
-            "published_at": str(row[4]),
-            "discovered_at": str(row[5]),
+            "scrape_policy": resolve_scrape_policy(row[4], fallback_to_full=True),
+            "published_at": str(row[5]),
+            "discovered_at": str(row[6]),
         }
         for row in rows
     ]
+
+
+def sync_rss_item_policies_by_source(
+    connection: sqlite3.Connection,
+    source_policy_map: dict[str, str],
+) -> int:
+    """Synchronize rss_items.scrape_policy to current feed config by source name."""
+    if not source_policy_map:
+        return 0
+
+    before_changes = connection.total_changes
+    with connection:
+        for source, policy in sorted(source_policy_map.items(), key=lambda item: item[0]):
+            source_name = str(source).strip()
+            if not source_name:
+                continue
+            resolved_policy = resolve_scrape_policy(policy, fallback_to_full=True)
+            connection.execute(
+                """
+                UPDATE rss_items
+                SET scrape_policy = ?
+                WHERE source = ? AND COALESCE(scrape_policy, ?) != ?
+                """,
+                (resolved_policy, source_name, SCRAPE_POLICY_FULL, resolved_policy),
+            )
+    return connection.total_changes - before_changes
+
+
+def fetch_rss_item_scrape_policy_by_url(connection: sqlite3.Connection, url: str) -> str | None:
+    row = connection.execute(
+        """
+        SELECT scrape_policy
+        FROM rss_items
+        WHERE url = ?
+        LIMIT 1
+        """,
+        (url,),
+    ).fetchone()
+    if not row:
+        return None
+    return resolve_scrape_policy(row[0], fallback_to_full=True)

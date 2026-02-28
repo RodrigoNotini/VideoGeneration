@@ -13,7 +13,12 @@ from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 import requests
 
-from core.common.utils import sha256_text
+from core.common.utils import (
+    SCRAPE_POLICY_FULL,
+    SCRAPE_POLICY_METADATA_ONLY,
+    resolve_scrape_policy,
+    sha256_text,
+)
 from core.config.config_loader import load_all_configs
 from core.persistence.db import (
     count_rss_items,
@@ -22,6 +27,7 @@ from core.persistence.db import (
     fetch_rss_items_for_ranking,
     initialize_database,
     insert_rss_items,
+    sync_rss_item_policies_by_source,
 )
 from core.state import PipelineState, copy_state
 
@@ -186,6 +192,7 @@ def _entry_published_at(entry: dict[str, Any]) -> str:
 def _build_normalized_item(
     *,
     source: str,
+    scrape_policy: str,
     entry: dict[str, Any],
     discovered_at: str,
 ) -> dict[str, str] | None:
@@ -198,12 +205,17 @@ def _build_normalized_item(
     return {
         "id": sha256_text(canonical_url),
         "source": source.strip(),
+        "scrape_policy": resolve_scrape_policy(scrape_policy, fallback_to_full=True),
         "title": title,
         "url": canonical_url,
         "published_at": _entry_published_at(entry),
         "title_hash": title_hash,
         "discovered_at": discovered_at,
     }
+
+
+def _resolve_feed_policy(feed: dict[str, Any]) -> str:
+    return resolve_scrape_policy(feed.get("scrape_policy"), fallback_to_full=True)
 
 
 def _sort_items(items: list[dict[str, str]]) -> list[dict[str, str]]:
@@ -302,9 +314,22 @@ def run(state: PipelineState) -> PipelineState:
     retention_deleted_count = 0
     remaining_rows = 0
     fetch_skipped = False
+    policy_sync_updated_count = 0
+    source_policy_map = {
+        str(feed.get("name", "")).strip(): _resolve_feed_policy(feed)
+        for feed in feeds
+        if str(feed.get("name", "")).strip()
+    }
+    configured_metadata_only_feeds = sum(
+        1 for _source, policy in source_policy_map.items() if policy == SCRAPE_POLICY_METADATA_ONLY
+    )
+    configured_full_scrape_feeds = sum(
+        1 for _source, policy in source_policy_map.items() if policy == SCRAPE_POLICY_FULL
+    )
 
     try:
         retention_deleted_count = delete_rss_items_older_than(connection, retention_cutoff)
+        policy_sync_updated_count = sync_rss_item_policies_by_source(connection, source_policy_map)
         remaining_rows = count_rss_items(connection)
         fetch_skipped = remaining_rows > skip_fetch_threshold
 
@@ -328,12 +353,14 @@ def run(state: PipelineState) -> PipelineState:
                 attempted_feeds += 1
                 source = str(feed["name"]).strip()
                 feed_url = str(feed["url"]).strip()
+                scrape_policy = _resolve_feed_policy(feed)
                 logger.info(
-                    "RSS feed attempt %s/%s: %s <%s>",
+                    "RSS feed attempt %s/%s: %s <%s> policy=%s",
                     feed_index,
                     len(rotated_feeds),
                     source,
                     feed_url,
+                    scrape_policy,
                 )
                 try:
                     entries = _fetch_feed_entries(feed_url)
@@ -361,6 +388,7 @@ def run(state: PipelineState) -> PipelineState:
 
                     normalized = _build_normalized_item(
                         source=source,
+                        scrape_policy=scrape_policy,
                         entry=entry,
                         discovered_at=discovered_at,
                     )
@@ -385,6 +413,7 @@ def run(state: PipelineState) -> PipelineState:
                     "title": item["title"],
                     "title_hash": item["title_hash"],
                     "source": item["source"],
+                    "scrape_policy": item["scrape_policy"],
                     "published_at": item["published_at"],
                     "discovered_at": item["discovered_at"],
                 }
@@ -402,6 +431,7 @@ def run(state: PipelineState) -> PipelineState:
             "url": item["url"],
             "published_at": item["published_at"],
             "title_hash": item["title_hash"],
+            "scrape_policy": resolve_scrape_policy(item.get("scrape_policy"), fallback_to_full=True),
         }
         for item in ordered_items
     ]
@@ -418,6 +448,15 @@ def run(state: PipelineState) -> PipelineState:
     counters["rss_inventory_count_after_cleanup"] = remaining_rows
     counters["rss_skip_fetch_threshold"] = skip_fetch_threshold
     counters["rss_feed_start_index"] = feed_start_index
+    counters["rss_policy_sync_updated_count"] = policy_sync_updated_count
+    counters["rss_configured_metadata_only_feeds"] = configured_metadata_only_feeds
+    counters["rss_configured_full_scrape_allowed_feeds"] = configured_full_scrape_feeds
+    counters["rss_items_metadata_only_count"] = sum(
+        1 for item in state_items if item["scrape_policy"] == SCRAPE_POLICY_METADATA_ONLY
+    )
+    counters["rss_items_full_scrape_allowed_count"] = sum(
+        1 for item in state_items if item["scrape_policy"] == SCRAPE_POLICY_FULL
+    )
 
     flags = next_state["metrics"]["flags"]
     flags["rss_partial_success"] = (not fetch_skipped) and feeds_failed > 0 and len(state_items) > 0
@@ -426,6 +465,7 @@ def run(state: PipelineState) -> PipelineState:
     flags["rss_fetch_skipped_threshold_hit"] = fetch_skipped
     flags["rss_feed_rotation_basis"] = rotation_basis
     flags["rss_feed_rotation_first_feed_url"] = rotation_first_feed_url
+    flags["rss_has_metadata_only_items"] = counters["rss_items_metadata_only_count"] > 0
     flags["rss_feeds_exhausted_before_target"] = (
         (not fetch_skipped)
         and

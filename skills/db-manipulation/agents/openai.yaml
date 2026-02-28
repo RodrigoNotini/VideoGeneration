@@ -1,4 +1,0 @@
-interface:
-  display_name: "DB Manipulation"
-  short_description: "Print table data/counts, clear table rows, and delete N filtered rows in SQLite"
-  default_prompt: "Use db_table_ops.py to inspect or mutate a SQLite table with strict safety checks."

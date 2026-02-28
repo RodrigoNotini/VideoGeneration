@@ -93,8 +93,8 @@ If a phase introduces new third-party libraries, it MUST update `requirements/ph
 |-------|------|--------|
 | 0 | Bootstrap & Observability | DONE |
 | 1 | RSS Discovery | DONE |
-| 2 | Theme URL Selection | IN PROGRESS |
-| 3 | Interestingness Ranking | LOCKED |
+| 2 | Theme URL Selection | DONE |
+| 3 | Interestingness Ranking | DONE |
 | 4 | Article Extraction | LOCKED |
 | 5 | Script Generation | LOCKED |
 | 6 | Validation Loop | LOCKED |
@@ -206,6 +206,12 @@ Fetch RSS feeds defined in `configs/rss_feeds.yaml`, normalize entries, deduplic
 - Deduplicate by URL and title hash.
 - Persist to DB.
 - Generate rss_items.json.
+- Enforce required per-feed `scrape_policy` from `configs/rss_feeds.yaml`:
+  - `full_scrape_allowed`
+  - `metadata_only`
+- Add `scrape_policy` persistence field to `rss_items` DB schema with idempotent migration path.
+- Synchronize DB policy for existing rows by source name from current feed config at collector start.
+- Propagate `scrape_policy` into state and downstream artifacts (including skip-fetch DB path).
 - Enforce run-start RSS retention cleanup for rows older than 7 days.
 - If post-cleanup RSS inventory is > 200, skip network fetch and continue pipeline with DB-backed candidates.
 - Increase `max_articles_per_run` default from 20 to 50.
@@ -223,6 +229,8 @@ Fetch RSS feeds defined in `configs/rss_feeds.yaml`, normalize entries, deduplic
 - Skip-fetch behavior verified for strict condition `post_cleanup_count > 200`.
 - `max_articles_per_run` default and effective cap verified at 50 for fetch and skip paths.
 - Deterministic feed start rotation verified and auditable via metrics.
+- Source policy propagation verified in fetch and skip paths.
+- DB migration and policy sync idempotency verified.
 - Dependencies isolated.
 - README updated accurately.
 
@@ -303,7 +311,7 @@ Choose the single most interesting article from the Phase 2 subset using theme-s
 
 ## Exit Criteria
 
-- Deterministic ranking for identical inputs.
+- Production stability criterion defined and verified with repeated-run overlap checks under controlled score variance.
 - Exactly one final selection emitted from Phase 2 subset.
 - No embedding-based ranking in this phase.
 - Criteria-based scoring policy applied according to selected theme.
@@ -324,7 +332,11 @@ Extract clean structured content from selected article.
 
 - Update `requirements/phase4.txt`.
 - Implement article_extractor.py.
-- Extract raw HTML for auditing (`article_raw.html`).
+- Enforce source policy gate before extraction:
+  - if `scrape_policy = metadata_only`: hard-block full extraction and emit deterministic metadata-only payload.
+  - if `scrape_policy = full_scrape_allowed`: continue normal extraction path.
+- Resolve selected item policy from ranked metadata, with fallback lookup by URL if required.
+- Extract raw HTML for auditing (`article_raw.html`) only when full extraction is allowed.
 - Produce cleaned structured output (`article.json`).
 - Normalize:
   - title
@@ -347,6 +359,7 @@ IMPORTANT:
 
 - Clean structured schema produced.
 - No raw HTML sent downstream.
+- Metadata-only policy gate verified (no HTML fetch attempt).
 - Dependencies isolated.
 - README updated.
 

@@ -143,16 +143,19 @@ Responsibilities:
 - Normalize entries
 - Deduplicate by URL and title hash
 - Store candidates in database
+- Enforce per-feed `scrape_policy` (`full_scrape_allowed` or `metadata_only`) from `configs/rss_feeds.yaml`
 - Run retention cleanup at collector start and delete rows older than 7 days
 - Evaluate post-cleanup DB inventory and skip network fetch when inventory is > 200
 - Load deterministic DB-backed candidates when fetch is skipped so theme selection still runs
 - Apply deterministic feed balancing with rotated start index derived from UTC date
+- Persist and propagate `scrape_policy` for every candidate into DB, state, and downstream artifacts
 
 RSS Discovery Invariants:
 
 - Cleanup executes before threshold evaluation on every run.
 - No `rss_items` row may remain in DB for more than 7 days.
 - Feed traversal order must be deterministic for a fixed UTC date and feed list.
+- `rss_items.scrape_policy` must be synchronized to current feed config by source name on collector start.
 
 ---
 
@@ -204,10 +207,18 @@ Ranking invariants:
 
 Responsibilities:
 
-- Scrape article HTML
+- Resolve selected source policy from ranked item metadata (fallback lookup by URL)
+- Hard-block full extraction for `metadata_only` sources
+- Return deterministic metadata-only structured payload when blocked
+- Scrape article HTML only for `full_scrape_allowed` sources
 - Remove ads and navigation text
 - Normalize into structured format
 - Extract clean paragraphs
+
+Extraction Policy Invariants:
+
+- No full HTML fetch attempt is allowed when `scrape_policy = metadata_only`.
+- Policy-gated runs must expose explicit metrics/flags for observability.
 
 ---
 

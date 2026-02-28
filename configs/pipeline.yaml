@@ -1,6 +1,6 @@
-name: phase2_theme_url_selection
-phase: 2
-phase_name: "Theme URL Selection"
+name: phase3_interestingness_ranking
+phase: 3
+phase_name: "Interestingness Ranking"
 topic: "AI & Tech Daily Briefing"
 theme: "AI"
 target_platform: "youtube_shorts"
@@ -19,12 +19,23 @@ phase2_selector:
   deterministic:
     temperature: 0.0
     top_p: 1.0
+phase3_ranker:
+  model: "gpt-4.1-mini"
+  prompt_version: "phase3-interestingness-ranker-v1"
+  criteria_policy_version: "phase3-interestingness-policy-v1"
+  target_selection_count: 1
+  tie_break_policy: "score_desc_then_published_at_desc_then_url_asc"
+  deterministic:
+    temperature: 0.0
+    top_p: 1.0
+  stability:
+    min_overlap_ratio: 0.9
 output_dir: "outputs"
 database_path: "data/db/app.sqlite"
 deterministic_seed: "phase2-seed-v1"
 deterministic_started_at: "2026-01-01T00:00:00Z"
 versions:
-  prompt_version: "phase2-theme-selector-v1"
-  schema_version: "phase2-theme-selector-v1"
+  prompt_version: "phase3-interestingness-ranker-v1"
+  schema_version: "phase3-interestingness-ranker-v1"
   template_version: "v1-placeholder"
-  model_version: "phase2-gpt-4.1-mini"
+  model_version: "phase3-gpt-4.1-mini"
