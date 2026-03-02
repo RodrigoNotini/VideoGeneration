@@ -248,10 +248,23 @@ def _fetch_feed_entries(feed_url: str) -> list[dict[str, Any]]:
     response.raise_for_status()
 
     parsed = feedparser.parse(response.content)
+    entries = [dict(entry) for entry in parsed.entries]
     if getattr(parsed, "bozo", 0):
-        raise ValueError(f"Feed parser error for {feed_url}")
+        parse_error = getattr(parsed, "bozo_exception", None)
+        if entries:
+            logger.warning(
+                "Feed parser reported bozo for %s but entries exist; accepting entries. error=%s",
+                feed_url,
+                str(parse_error) if parse_error is not None else "",
+            )
+        else:
+            raise ValueError(
+                f"Feed parser error for {feed_url}: {parse_error!s}"
+                if parse_error is not None
+                else f"Feed parser error for {feed_url}"
+            )
 
-    return [dict(entry) for entry in parsed.entries]
+    return entries
 
 
 def run(state: PipelineState) -> PipelineState:

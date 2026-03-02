@@ -48,37 +48,51 @@ def _resolve_policy_from_db(selected_url: str) -> str | None:
     if not db_rel_path:
         return None
 
-    connection = initialize_database(_project_root() / db_rel_path)
+    try:
+        connection = initialize_database(_project_root() / db_rel_path)
+    except Exception:
+        logger.exception("Phase 4 failed to initialize DB while resolving policy for selected_url=%s", selected_url)
+        return None
+
     try:
         return fetch_rss_item_scrape_policy_by_url(connection, selected_url)
+    except Exception:
+        logger.exception("Phase 4 failed DB policy lookup for selected_url=%s", selected_url)
+        return None
     finally:
         connection.close()
 
 
-def _resolve_selected_scrape_policy(state: PipelineState, selected_url: str) -> str:
+def _resolve_selected_scrape_policy(state: PipelineState, selected_url: str) -> tuple[str, bool]:
     ranked_policy = _resolve_policy_from_items(
         state["ranked_items"] if isinstance(state["ranked_items"], list) else [],
         selected_url,
     )
     if ranked_policy:
-        return ranked_policy
+        return ranked_policy, False
 
     rss_policy = _resolve_policy_from_items(
         state["rss_items"] if isinstance(state["rss_items"], list) else [],
         selected_url,
     )
     if rss_policy:
-        return rss_policy
+        return rss_policy, False
 
     db_policy = _resolve_policy_from_db(selected_url)
     if db_policy:
         logger.info("Phase 4 resolved scrape_policy from DB for selected_url=%s", selected_url)
-        return db_policy
+        return db_policy, False
 
-    return SCRAPE_POLICY_FULL
+    logger.warning("Phase 4 policy resolution failed for selected_url=%s; applying fail-closed metadata_only", selected_url)
+    return SCRAPE_POLICY_METADATA_ONLY, True
 
 
-def _metadata_only_article(selected_url: str) -> dict[str, Any]:
+def _metadata_only_article(
+    selected_url: str,
+    *,
+    extraction_status: str = "policy_blocked",
+    policy_resolution_failed: bool = False,
+) -> dict[str, Any]:
     return {
         "title": "Metadata-only article blocked by source policy",
         "author": "",
@@ -87,7 +101,8 @@ def _metadata_only_article(selected_url: str) -> dict[str, Any]:
         "paragraphs": [],
         "scrape_policy": SCRAPE_POLICY_METADATA_ONLY,
         "metadata_only": True,
-        "extraction_status": "policy_blocked",
+        "extraction_status": extraction_status,
+        "policy_resolution_failed": policy_resolution_failed,
     }
 
 
@@ -110,14 +125,20 @@ def _full_scrape_placeholder_article(selected_url: str) -> dict[str, Any]:
 def run(state: PipelineState) -> PipelineState:
     next_state = copy_state(state)
     selected_url = next_state["selected_url"] or "https://example.com/phase0/no_selection"
-    selected_policy = _resolve_selected_scrape_policy(next_state, selected_url)
+    selected_policy, policy_resolution_failed = _resolve_selected_scrape_policy(next_state, selected_url)
 
     counters = next_state["metrics"]["counters"]
     flags = next_state["metrics"]["flags"]
     flags["phase4_selected_scrape_policy"] = selected_policy
+    flags["phase4_policy_resolution_failed"] = policy_resolution_failed
+    counters["phase4_policy_resolution_failed_count"] = 1 if policy_resolution_failed else 0
 
     if selected_policy == SCRAPE_POLICY_METADATA_ONLY:
-        next_state["article"] = _metadata_only_article(selected_url)
+        next_state["article"] = _metadata_only_article(
+            selected_url,
+            extraction_status="policy_resolution_failed" if policy_resolution_failed else "policy_blocked",
+            policy_resolution_failed=policy_resolution_failed,
+        )
         counters["phase4_policy_blocked_count"] = 1
         flags["phase4_policy_blocked_metadata_only"] = True
         flags["phase4_html_fetch_attempted"] = False

@@ -5,7 +5,9 @@ from __future__ import annotations
 import os
 import sqlite3
 import shutil
+import sys
 import time
+import types
 import unittest
 from pathlib import Path
 from typing import Any, Callable
@@ -154,6 +156,54 @@ class Phase1ExitCriteriaTests(unittest.TestCase):
                 (url,),
             ).fetchone()
         return str(row[0]) if row else ""
+
+    def test_fetch_feed_entries_accepts_bozo_feed_when_entries_exist(self) -> None:
+        feed_url = "https://feed.example.com/bozo-with-entries"
+
+        class _FakeResponse:
+            content = b"<rss/>"
+
+            def raise_for_status(self) -> None:
+                return None
+
+        parsed = types.SimpleNamespace(
+            bozo=1,
+            bozo_exception=ValueError("not well-formed xml"),
+            entries=[{"title": "Recovered", "link": "https://example.com/recovered"}],
+        )
+        fake_feedparser = types.SimpleNamespace(parse=lambda _content: parsed)
+
+        with (
+            patch.object(rss_collector.requests, "get", return_value=_FakeResponse()),
+            patch.dict(sys.modules, {"feedparser": fake_feedparser}),
+        ):
+            entries = rss_collector._fetch_feed_entries(feed_url)
+
+        self.assertEqual(1, len(entries))
+        self.assertEqual("https://example.com/recovered", entries[0]["link"])
+
+    def test_fetch_feed_entries_rejects_unusable_bozo_feed_without_entries(self) -> None:
+        feed_url = "https://feed.example.com/bozo-empty"
+
+        class _FakeResponse:
+            content = b"<rss/>"
+
+            def raise_for_status(self) -> None:
+                return None
+
+        parsed = types.SimpleNamespace(
+            bozo=1,
+            bozo_exception=ValueError("not well-formed xml"),
+            entries=[],
+        )
+        fake_feedparser = types.SimpleNamespace(parse=lambda _content: parsed)
+
+        with (
+            patch.object(rss_collector.requests, "get", return_value=_FakeResponse()),
+            patch.dict(sys.modules, {"feedparser": fake_feedparser}),
+        ):
+            with self.assertRaises(ValueError):
+                rss_collector._fetch_feed_entries(feed_url)
 
     def test_exit_criteria_rss_fetching_verified(self) -> None:
         root = self._make_temp_root()

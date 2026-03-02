@@ -3,7 +3,7 @@
 from __future__ import annotations
 
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from agents import article_extractor
 from core.common.utils import SCRAPE_POLICY_FULL, SCRAPE_POLICY_METADATA_ONLY
@@ -135,6 +135,64 @@ class SourcePolicyPhase4GateTests(unittest.TestCase):
         db_lookup.assert_called_once_with(selected_url)
         self.assertTrue(final_state["article"]["metadata_only"])
         self.assertEqual("policy_blocked", final_state["article"]["extraction_status"])
+
+    def test_phase4_unresolved_policy_fails_closed(self) -> None:
+        state = self._make_state()
+        selected_url = "https://example.com/unresolved-policy"
+        state["selected_url"] = selected_url
+        state["ranked_items"] = [
+            {
+                "url": selected_url,
+                "title": "Unresolved Policy Story",
+                "source": "Unknown",
+            }
+        ]
+
+        with patch.object(article_extractor, "_resolve_policy_from_db", return_value=None) as db_lookup:
+            final_state = article_extractor.run(state)
+
+        db_lookup.assert_called_once_with(selected_url)
+        self.assertTrue(final_state["article"]["metadata_only"])
+        self.assertEqual("policy_resolution_failed", final_state["article"]["extraction_status"])
+        self.assertTrue(final_state["article"]["policy_resolution_failed"])
+        self.assertEqual(SCRAPE_POLICY_METADATA_ONLY, final_state["article"]["scrape_policy"])
+        self.assertTrue(final_state["metrics"]["flags"]["phase4_policy_resolution_failed"])
+        self.assertEqual(1, final_state["metrics"]["counters"]["phase4_policy_resolution_failed_count"])
+        self.assertEqual(1, final_state["metrics"]["counters"]["phase4_policy_blocked_count"])
+        self.assertFalse(final_state["metrics"]["flags"]["phase4_html_fetch_attempted"])
+
+    def test_phase4_db_policy_lookup_fails_safe_when_db_init_fails(self) -> None:
+        selected_url = "https://example.com/db-init-failure"
+        with (
+            patch.object(
+                article_extractor,
+                "load_all_configs",
+                return_value={"pipeline": {"database_path": "data/db/app.sqlite"}},
+            ),
+            patch.object(article_extractor, "initialize_database", side_effect=RuntimeError("db down")),
+        ):
+            policy = article_extractor._resolve_policy_from_db(selected_url)
+        self.assertIsNone(policy)
+
+    def test_phase4_db_policy_lookup_fails_safe_when_query_fails(self) -> None:
+        selected_url = "https://example.com/db-query-failure"
+        fake_connection = Mock()
+        with (
+            patch.object(
+                article_extractor,
+                "load_all_configs",
+                return_value={"pipeline": {"database_path": "data/db/app.sqlite"}},
+            ),
+            patch.object(article_extractor, "initialize_database", return_value=fake_connection),
+            patch.object(
+                article_extractor,
+                "fetch_rss_item_scrape_policy_by_url",
+                side_effect=RuntimeError("query failed"),
+            ),
+        ):
+            policy = article_extractor._resolve_policy_from_db(selected_url)
+        self.assertIsNone(policy)
+        fake_connection.close.assert_called_once()
 
 
 if __name__ == "__main__":

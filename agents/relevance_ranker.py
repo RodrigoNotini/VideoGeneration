@@ -6,7 +6,6 @@ import json
 import logging
 import math
 import os
-import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
@@ -14,6 +13,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
+from agents.model_retry import score_with_retry_and_fallback
 from core.common.utils import resolve_scrape_policy, write_json
 from core.config.config_loader import load_all_configs
 from core.state import PipelineState, copy_state
@@ -31,6 +31,7 @@ DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TOP_P = 1.0
 DEFAULT_TARGET_SELECTION_COUNT = 1
 DEFAULT_MIN_OVERLAP_RATIO = 0.9
+OPENAI_TIMEOUT_SECONDS = 30.0
 NO_SELECTION_URL = "https://example.com/phase3/no_selection"
 TIE_BREAK_POLICY = "score_desc_then_published_at_desc_then_url_asc"
 SUPPORTED_TIE_BREAK_POLICIES = {TIE_BREAK_POLICY}
@@ -549,6 +550,7 @@ def _call_ranker_model(
         model=model_name,
         temperature=temperature,
         top_p=top_p,
+        timeout=OPENAI_TIMEOUT_SECONDS,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_payload},
@@ -672,63 +674,46 @@ def _score_candidates(
     prompt_version: str,
     openai_api_key_env_var: str,
 ) -> tuple[dict[int, tuple[float, str, dict[str, float]]], dict[str, Any]]:
-    retry_count = 0
-    fallback_used = False
-    model_latency_ms = 0
-    token_usage = {"prompt_tokens": 0, "completion_tokens": 0, "total_tokens": 0}
-    last_error: str | None = None
     labels = [item["label"] for item in criteria]
 
-    for attempt in range(2):
-        started = time.perf_counter()
-        try:
-            payload, usage = _call_ranker_model(
-                theme=theme,
-                criteria=criteria,
-                candidates=candidates,
-                model_name=model_name,
-                temperature=temperature,
-                top_p=top_p,
-                prompt_version=prompt_version,
-                openai_api_key_env_var=openai_api_key_env_var,
-            )
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            model_latency_ms += elapsed_ms
-            parsed_scores = _parse_scores(payload, len(candidates), labels)
-            for key in token_usage:
-                token_usage[key] += int(usage.get(key, 0) or 0)
-            return parsed_scores, {
-                "retry_count": retry_count,
-                "fallback_used": fallback_used,
-                "model_latency_ms": model_latency_ms,
-                "token_usage": token_usage,
-                "last_error": last_error,
-            }
-        except RankerDependencyError:
-            raise
-        except Exception as error:  # pragma: no cover - deterministic retry/fallback behavior tested
-            elapsed_ms = int((time.perf_counter() - started) * 1000)
-            model_latency_ms += elapsed_ms
-            last_error = str(error)
-            if attempt == 0:
-                retry_count = 1
-                continue
-            break
-
-    fallback_used = True
-    if last_error:
-        logger.warning(
-            "Phase 3 ranker model failed after retry; using deterministic fallback. error=%s",
-            last_error,
+    def _model_call() -> tuple[dict[str, Any], dict[str, int]]:
+        return _call_ranker_model(
+            theme=theme,
+            criteria=criteria,
+            candidates=candidates,
+            model_name=model_name,
+            temperature=temperature,
+            top_p=top_p,
+            prompt_version=prompt_version,
+            openai_api_key_env_var=openai_api_key_env_var,
         )
-    heuristic_scores = _heuristic_scores(candidates, theme)
-    return heuristic_scores, {
-        "retry_count": retry_count,
-        "fallback_used": fallback_used,
-        "model_latency_ms": model_latency_ms,
-        "token_usage": token_usage,
-        "last_error": last_error,
-    }
+
+    def _parse(payload: dict[str, Any]) -> dict[int, tuple[float, str, dict[str, float]]]:
+        return _parse_scores(payload, len(candidates), labels)
+
+    def _unexpected_error(error: Exception) -> RelevanceRankerError:
+        return RelevanceRankerError(
+            _phase3_error(
+                code="unexpected_ranker_scoring_error",
+                message="Unexpected Phase 3 ranker scoring failure.",
+                details={
+                    "error_type": error.__class__.__name__,
+                    "error": str(error),
+                },
+            )
+        )
+
+    return score_with_retry_and_fallback(
+        model_call=_model_call,
+        parse_scores=_parse,
+        fallback_scores=lambda: _heuristic_scores(candidates, theme),
+        dependency_error_type=RankerDependencyError,
+        model_response_error_type=ModelResponseError,
+        unexpected_error_factory=_unexpected_error,
+        logger=logger,
+        fallback_log_template="Phase 3 ranker model failed after retry; using deterministic fallback. error=%s",
+        include_last_error=True,
+    )
 
 
 def _published_sort_parts(published_at: str) -> tuple[int, float]:

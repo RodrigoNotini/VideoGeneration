@@ -5,7 +5,9 @@ from __future__ import annotations
 import inspect
 import json
 import shutil
+import sys
 import time
+import types
 import unittest
 from pathlib import Path
 from typing import Any
@@ -327,6 +329,86 @@ class Phase3RelevanceRankerTests(unittest.TestCase):
         self.assertEqual(1, final_state["metrics"]["counters"]["phase3_ranker_retry_count"])
         self.assertTrue(final_state["metrics"]["flags"]["phase3_ranker_fallback_used"])
         self.assertEqual(6, len(final_state["ranked_items"]))
+
+    def test_unexpected_model_error_is_re_raised_with_context(self) -> None:
+        root = self._make_temp_root()
+        phase2_subset = self._make_phase2_subset(6)
+        state = self._make_initial_state()
+        state["ranked_items"] = phase2_subset
+
+        with (
+            patch.object(relevance_ranker, "_project_root", return_value=root),
+            patch.object(
+                relevance_ranker,
+                "_load_runtime_configs",
+                return_value=(self._make_pipeline_config("AI"), self._make_openai_config()),
+            ),
+            patch.object(
+                relevance_ranker,
+                "_call_ranker_model",
+                side_effect=ValueError("unexpected ranking bug"),
+            ) as call_mock,
+        ):
+            with self.assertRaises(relevance_ranker.RelevanceRankerError) as context:
+                relevance_ranker.run(state)
+
+        self.assertEqual(1, call_mock.call_count)
+        error_payload = json.loads(str(context.exception))
+        self.assertEqual("unexpected_ranker_scoring_error", error_payload["code"])
+        self.assertEqual("ValueError", error_payload["details"]["error_type"])
+
+    def test_ranker_openai_call_includes_explicit_timeout(self) -> None:
+        candidate = relevance_ranker.Candidate(
+            item_id=1,
+            url="https://example.com/story-001",
+            canonical_url="https://example.com/story-001",
+            title="Story 001",
+            source="ExampleFeed",
+            scrape_policy=SCRAPE_POLICY_FULL,
+            published_at="2026-01-01T00:00:00Z",
+            summary="Summary",
+            phase2_reason="Selected by phase 2",
+            phase2_theme_match_score=0.7,
+        )
+        captured_kwargs: dict[str, Any] = {}
+        criteria = relevance_ranker._criteria_for_theme("AI")
+
+        class _FakeCompletions:
+            def create(self, **kwargs: Any) -> Any:
+                captured_kwargs.update(kwargs)
+                usage = types.SimpleNamespace(prompt_tokens=2, completion_tokens=3, total_tokens=5)
+                labels = [item["label"] for item in criteria]
+                criteria_scores = {label: 0.7 for label in labels}
+                message = types.SimpleNamespace(
+                    content=json.dumps(
+                        {"items": [{"id": 1, "score": 0.7, "reason": "Strong interest", "criteria_scores": criteria_scores}]}
+                    )
+                )
+                choice = types.SimpleNamespace(message=message)
+                return types.SimpleNamespace(choices=[choice], usage=usage)
+
+        class _FakeOpenAI:
+            def __init__(self, api_key: str | None = None) -> None:
+                del api_key
+                self.chat = types.SimpleNamespace(completions=_FakeCompletions())
+
+        fake_openai_module = types.SimpleNamespace(OpenAI=_FakeOpenAI)
+        with patch.dict(sys.modules, {"openai": fake_openai_module}):
+            payload, usage = relevance_ranker._call_ranker_model(
+                theme="AI",
+                criteria=criteria,
+                candidates=[candidate],
+                model_name="gpt-4.1-mini",
+                temperature=0.0,
+                top_p=1.0,
+                prompt_version="phase3-interestingness-ranker-v1",
+                openai_api_key_env_var="OPENAI_API_KEY",
+            )
+
+        self.assertIn("timeout", captured_kwargs)
+        self.assertEqual(relevance_ranker.OPENAI_TIMEOUT_SECONDS, captured_kwargs["timeout"])
+        self.assertEqual(5, usage["total_tokens"])
+        self.assertIn("items", payload)
 
     def test_artifact_contract_creates_three_phase3_outputs(self) -> None:
         root = self._make_temp_root()

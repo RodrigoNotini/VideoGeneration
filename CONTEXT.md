@@ -340,91 +340,100 @@ Constraints:
 
 ---
 
-# 9 . Structural Organization & Production Hardening
+# 9. Project Structure & Production Hardening
 
+```text
 VideoGeneration/
-â”œâ”€â”€ IMPLEMENTATION_PLAN.md
-â”œâ”€â”€ CONTEXT.md
-â”œâ”€â”€ CHANGELOG.md
-â”œâ”€â”€ README.md
-â”œâ”€â”€ main.py                       # Phase 0 entrypoint (stub deterministic pipeline)
-â”œâ”€â”€ core/
-â”‚   â”œâ”€â”€ __init__.py
-â”‚   â”œâ”€â”€ state.py                  # State contract and deterministic initial state
-â”‚   â”œâ”€â”€ common/
-â”‚   â”‚   â”œâ”€â”€ __init__.py
-â”‚   â”‚   â””â”€â”€ utils.py              # Deterministic utility helpers
-â”‚   â”œâ”€â”€ config/
-â”‚   â”‚   â”œâ”€â”€ __init__.py
-â”‚   â”‚   â”œâ”€â”€ config_loader.py      # Strict config loader
-â”‚   â”‚   â””â”€â”€ env_validation.py     # Phase-aware env validation
-â”‚   â””â”€â”€ persistence/
-â”‚       â”œâ”€â”€ __init__.py
-â”‚       â””â”€â”€ db.py                 # SQLite initialization and persistence helpers
-â”œâ”€â”€ requirements.txt              # Agregador opcional (referencia requirements/*.txt)
-â”œâ”€â”€ .env                          # OpenAI key (root, auto-loaded by python-dotenv; not versioned)
-â”œâ”€â”€ .env.example                  # Env vars esperadas por fase
-â”œâ”€â”€ .gitignore
-â”‚
-â”œâ”€â”€ requirements/                 # Source of truth das dependÃªncias
-â”‚   â”œâ”€â”€ base.txt                  # Runtime mÃ­nimo (Phase 0)
-â”‚   â”œâ”€â”€ dev.txt                   # Ferramentas de desenvolvimento/teste
-â”‚   â”œâ”€â”€ phase1.txt                # RSS Discovery
-â”‚   â”œâ”€â”€ phase2.txt                # Theme URL Selection
-â”‚   â”œâ”€â”€ phase3.txt                # Interestingness Ranking (Criteria-Based)
-â”‚   â”œâ”€â”€ phase4.txt                # Article Extraction
-â”‚   â”œâ”€â”€ phase5.txt                # Script Generation (LLM)
-â”‚   â”œâ”€â”€ phase6.txt                # Validation Loop
-â”‚   â”œâ”€â”€ phase7.txt                # Image Generation
-â”‚   â”œâ”€â”€ phase8.txt                # TTS & Audio
-â”‚   â”œâ”€â”€ phase9.txt                # Video Rendering
-â”‚   â””â”€â”€ phase10.txt               # Production Hardening / Scheduler
-â”‚                 
-â”‚
-â”œâ”€â”€ configs/
-â”‚   â”œâ”€â”€ rss_feeds.yaml
-â”‚   â”œâ”€â”€ openai.yaml
-â”‚   â””â”€â”€ pipeline.yaml
-â”‚
-â”œâ”€â”€ prompts/
-â”‚   â”œâ”€â”€ script_writer/
-â”‚   â”‚   â””â”€â”€ system.txt
-â”‚   â””â”€â”€ validator/
-â”‚       â””â”€â”€ system.txt
-â”‚
-â”œâ”€â”€ schemas/
-â”‚   â”œâ”€â”€ article_schema.json
-â”‚   â””â”€â”€ script_schema.json
-â”‚
-â”œâ”€â”€ agents/
-â”‚   â”œâ”€â”€ __init__.py
-â”‚   â”œâ”€â”€ rss_collector.py
-â”‚   â”œâ”€â”€ theme_url_selector.py
-â”‚   â”œâ”€â”€ relevance_ranker.py
-â”‚   â”œâ”€â”€ article_extractor.py
-â”‚   â”œâ”€â”€ script_writer.py
-â”‚   â”œâ”€â”€ script_validator.py
-â”‚   â”œâ”€â”€ image_generator.py
-â”‚   â”œâ”€â”€ tts_generator.py
-â”‚   â”œâ”€â”€ video_renderer.py
-â”‚   â””â”€â”€ reporter.py
-â”‚
-â”œâ”€â”€ graphs/
-â”‚   â”œâ”€â”€ __init__.py
-â”‚   â””â”€â”€ news_to_video_graph.py
-â”‚
-â”œâ”€â”€ render/
-â”‚   â””â”€â”€ templates/
-â”‚       â””â”€â”€ v1/                   # Template versionado
-â”‚           â””â”€â”€ template_manifest.json
-â”‚
-â”œâ”€â”€ outputs/
-â”‚   â””â”€â”€ .gitkeep
-â”‚
-â””â”€â”€ data/
-    â””â”€â”€ db/
-        â”œâ”€â”€ .gitkeep
-        â””â”€â”€ app.sqlite            # Gerado em runtime
+|-- IMPLEMENTATION_PLAN.md
+|-- CONTEXT.md
+|-- CHANGELOG.md
+|-- README.md
+|-- main.py
+|-- requirements.txt
+|-- .env
+|-- .env.example
+|-- .gitignore
+|
+|-- agents/
+|   |-- __init__.py
+|   |-- rss_collector.py
+|   |-- theme_url_selector.py
+|   |-- relevance_ranker.py
+|   |-- model_retry.py
+|   |-- article_extractor.py
+|   |-- script_writer.py
+|   |-- script_validator.py
+|   |-- image_generator.py
+|   |-- tts_generator.py
+|   |-- video_renderer.py
+|   `-- reporter.py
+|
+|-- core/
+|   |-- __init__.py
+|   |-- state.py
+|   |-- common/
+|   |   |-- __init__.py
+|   |   `-- utils.py
+|   |-- config/
+|   |   |-- __init__.py
+|   |   |-- config_loader.py
+|   |   `-- env_validation.py
+|   `-- persistence/
+|       |-- __init__.py
+|       `-- db.py
+|
+|-- graphs/
+|   |-- __init__.py
+|   `-- news_to_video_graph.py
+|
+|-- configs/
+|   |-- rss_feeds.yaml
+|   |-- openai.yaml
+|   `-- pipeline.yaml
+|
+|-- requirements/
+|   |-- base.txt
+|   |-- dev.txt
+|   |-- phase1.txt
+|   |-- phase2.txt
+|   |-- phase3.txt
+|   |-- phase4.txt
+|   |-- phase5.txt
+|   |-- phase6.txt
+|   |-- phase7.txt
+|   |-- phase8.txt
+|   `-- phase9.txt
+|
+|-- prompts/
+|   |-- script_writer/
+|   |   `-- system.txt
+|   `-- validator/
+|       `-- system.txt
+|
+|-- schemas/
+|   |-- article_schema.json
+|   `-- script_schema.json
+|
+|-- render/
+|   `-- templates/
+|       `-- v1/
+|           `-- template_manifest.json
+|
+|-- tests/
+|   |-- test_phase1_exit_criteria.py
+|   |-- test_phase2_theme_selector.py
+|   |-- test_phase3_relevance_ranker.py
+|   |-- test_source_policy_contract.py
+|   `-- test_model_retry.py
+|
+|-- outputs/
+|   `-- .gitkeep
+|
+`-- data/
+    `-- db/
+        |-- .gitkeep
+        `-- app.sqlite
+```
 
 ---
 

@@ -157,11 +157,43 @@ Policy field appears in:
 ```text
 VideoGeneration/
 |-- agents/
+|   |-- article_extractor.py
+|   |-- model_retry.py
+|   |-- relevance_ranker.py
+|   |-- rss_collector.py
+|   `-- theme_url_selector.py
 |-- core/
+|   |-- config/
+|   |-- persistence/
+|   `-- state.py
 |-- graphs/
+|   `-- news_to_video_graph.py
 |-- configs/
+|   |-- openai.yaml
+|   |-- pipeline.yaml
+|   `-- rss_feeds.yaml
 |-- requirements/
+|   |-- base.txt
+|   |-- dev.txt
+|   |-- phase1.txt
+|   |-- phase2.txt
+|   |-- phase3.txt
+|   |-- phase4.txt
+|   |-- phase5.txt
+|   |-- phase6.txt
+|   |-- phase7.txt
+|   |-- phase8.txt
+|   `-- phase9.txt
 |-- tests/
+|   |-- test_model_retry.py
+|   |-- test_phase1_exit_criteria.py
+|   |-- test_phase2_theme_selector.py
+|   |-- test_phase3_relevance_ranker.py
+|   `-- test_source_policy_contract.py
+|-- prompts/
+|-- schemas/
+|-- render/
+|-- data/
 |-- outputs/
 `-- main.py
 ```

@@ -4,7 +4,9 @@ from __future__ import annotations
 
 import json
 import shutil
+import sys
 import time
+import types
 import unittest
 from pathlib import Path
 from typing import Any
@@ -358,6 +360,78 @@ class Phase2ThemeSelectorTests(unittest.TestCase):
         self.assertTrue(final_state["metrics"]["flags"]["phase2_selector_fallback_used"])
         self.assertEqual(1, final_state["metrics"]["counters"]["phase2_selector_retry_count"])
         self.assertEqual(6, len(final_state["ranked_items"]))
+
+    def test_unexpected_model_error_is_re_raised_with_context(self) -> None:
+        root = self._make_temp_root()
+        rss_items = self._make_rss_items(6)
+
+        with (
+            patch.object(theme_url_selector, "_project_root", return_value=root),
+            patch.object(
+                theme_url_selector,
+                "_load_runtime_configs",
+                return_value=(self._make_pipeline_config("AI"), self._make_openai_config()),
+            ),
+            patch.object(
+                theme_url_selector,
+                "_call_selector_model",
+                side_effect=ValueError("unexpected scoring bug"),
+            ) as call_mock,
+        ):
+            state = self._make_initial_state()
+            state["rss_items"] = rss_items
+            with self.assertRaises(theme_url_selector.ThemeURLSelectorError) as context:
+                theme_url_selector.run(state)
+
+        self.assertEqual(1, call_mock.call_count)
+        error_payload = json.loads(str(context.exception))
+        self.assertEqual("unexpected_selector_scoring_error", error_payload["code"])
+        self.assertEqual("ValueError", error_payload["details"]["error_type"])
+
+    def test_selector_openai_call_includes_explicit_timeout(self) -> None:
+        candidate = theme_url_selector.Candidate(
+            item_id=1,
+            url="https://example.com/story-001",
+            canonical_url="https://example.com/story-001",
+            title="Story 001",
+            source="ExampleFeed",
+            scrape_policy=SCRAPE_POLICY_FULL,
+            published_at="2026-01-01T00:00:00Z",
+            summary="Summary",
+        )
+        captured_kwargs: dict[str, Any] = {}
+
+        class _FakeCompletions:
+            def create(self, **kwargs: Any) -> Any:
+                captured_kwargs.update(kwargs)
+                usage = types.SimpleNamespace(prompt_tokens=2, completion_tokens=3, total_tokens=5)
+                message = types.SimpleNamespace(
+                    content='{"items":[{"id":1,"score":0.7,"reason":"Good thematic match"}]}'
+                )
+                choice = types.SimpleNamespace(message=message)
+                return types.SimpleNamespace(choices=[choice], usage=usage)
+
+        class _FakeOpenAI:
+            def __init__(self, api_key: str | None = None) -> None:
+                del api_key
+                self.chat = types.SimpleNamespace(completions=_FakeCompletions())
+
+        fake_openai_module = types.SimpleNamespace(OpenAI=_FakeOpenAI)
+        with patch.dict(sys.modules, {"openai": fake_openai_module}):
+            payload, usage = theme_url_selector._call_selector_model(
+                theme="AI",
+                candidates=[candidate],
+                model_name="gpt-4.1-mini",
+                temperature=0.0,
+                top_p=1.0,
+                prompt_version="phase2-theme-selector-v1",
+                openai_api_key_env_var="OPENAI_API_KEY",
+            )
+
+        self.assertIn("timeout", captured_kwargs)
+        self.assertEqual(theme_url_selector.OPENAI_TIMEOUT_SECONDS, captured_kwargs["timeout"])
+        self.assertEqual(5, usage["total_tokens"])
+        self.assertIn("items", payload)
 
     def test_missing_openai_dependency_surfaces_structured_error(self) -> None:
         root = self._make_temp_root()
