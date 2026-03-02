@@ -388,7 +388,7 @@ class Phase2ThemeSelectorTests(unittest.TestCase):
         self.assertEqual("unexpected_selector_scoring_error", error_payload["code"])
         self.assertEqual("ValueError", error_payload["details"]["error_type"])
 
-    def test_selector_openai_call_includes_explicit_timeout(self) -> None:
+    def test_selector_openai_call_applies_explicit_timeout(self) -> None:
         candidate = theme_url_selector.Candidate(
             item_id=1,
             url="https://example.com/story-001",
@@ -400,6 +400,7 @@ class Phase2ThemeSelectorTests(unittest.TestCase):
             summary="Summary",
         )
         captured_kwargs: dict[str, Any] = {}
+        captured_timeout: float | None = None
 
         class _FakeCompletions:
             def create(self, **kwargs: Any) -> Any:
@@ -412,8 +413,10 @@ class Phase2ThemeSelectorTests(unittest.TestCase):
                 return types.SimpleNamespace(choices=[choice], usage=usage)
 
         class _FakeOpenAI:
-            def __init__(self, api_key: str | None = None) -> None:
+            def __init__(self, api_key: str | None = None, timeout: float | None = None) -> None:
+                nonlocal captured_timeout
                 del api_key
+                captured_timeout = float(timeout) if timeout is not None else None
                 self.chat = types.SimpleNamespace(completions=_FakeCompletions())
 
         fake_openai_module = types.SimpleNamespace(OpenAI=_FakeOpenAI)
@@ -428,8 +431,8 @@ class Phase2ThemeSelectorTests(unittest.TestCase):
                 openai_api_key_env_var="OPENAI_API_KEY",
             )
 
-        self.assertIn("timeout", captured_kwargs)
-        self.assertEqual(theme_url_selector.OPENAI_TIMEOUT_SECONDS, captured_kwargs["timeout"])
+        self.assertEqual(theme_url_selector.OPENAI_TIMEOUT_SECONDS, captured_timeout)
+        self.assertNotIn("timeout", captured_kwargs)
         self.assertEqual(5, usage["total_tokens"])
         self.assertIn("items", payload)
 

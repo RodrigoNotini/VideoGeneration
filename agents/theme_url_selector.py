@@ -363,7 +363,11 @@ def _call_selector_model(
         raise SelectorDependencyError("Missing dependency: openai. Install requirements/phase2.txt") from error
 
     api_key = str(os.getenv(openai_api_key_env_var, "")).strip()
-    client = OpenAI(api_key=api_key) if api_key else OpenAI()
+    client = (
+        OpenAI(api_key=api_key, timeout=OPENAI_TIMEOUT_SECONDS)
+        if api_key
+        else OpenAI(timeout=OPENAI_TIMEOUT_SECONDS)
+    )
 
     system_prompt, user_instruction = _selector_prompt(theme, prompt_version)
     payload_items = [
@@ -390,7 +394,6 @@ def _call_selector_model(
         model=model_name,
         temperature=temperature,
         top_p=top_p,
-        timeout=OPENAI_TIMEOUT_SECONDS,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_payload},
