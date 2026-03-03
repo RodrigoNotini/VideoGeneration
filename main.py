@@ -14,7 +14,7 @@ from core.config.config_loader import ConfigError, load_all_configs
 from core.config.env_validation import validate_environment
 from core.persistence.db import initialize_database, save_artifact, save_run
 from core.state import copy_state, make_initial_state
-from core.common.utils import sha256_text, write_json
+from core.common.utils import is_runtime_verbose_logging_enabled, sha256_text, write_json
 from graphs.news_to_video_graph import run_pipeline
 
 
@@ -47,10 +47,21 @@ def _artifact_path_for_metadata(path: Path, project_root: Path) -> str:
 
 
 def main() -> int:
+    verbose_runtime_logs = is_runtime_verbose_logging_enabled()
     logging.basicConfig(
-        level=logging.INFO,
+        level=logging.DEBUG if verbose_runtime_logs else logging.INFO,
         format="%(asctime)s %(levelname)s [%(name)s] %(message)s",
     )
+    # Keep SDK transport retries quiet by default; app-level retry logs are more actionable.
+    sdk_level = logging.INFO if verbose_runtime_logs else logging.WARNING
+    logging.getLogger("openai").setLevel(sdk_level)
+    logging.getLogger("httpx").setLevel(sdk_level)
+    logging.getLogger(__name__).info(
+        "RUN_LOG_POLICY mode=%s sdk_log_level=%s",
+        "verbose" if verbose_runtime_logs else "concise",
+        logging.getLevelName(sdk_level),
+    )
+
     args = _parse_args()
     if args.theme is not None:
         os.environ["VG_THEME"] = args.theme

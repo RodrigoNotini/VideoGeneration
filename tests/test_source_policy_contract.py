@@ -2,7 +2,10 @@
 
 from __future__ import annotations
 
+import shutil
+import time
 import unittest
+from pathlib import Path
 from unittest.mock import Mock, patch
 
 from agents import article_extractor
@@ -56,6 +59,24 @@ class SourcePolicyConfigValidationTests(unittest.TestCase):
 
 
 class SourcePolicyPhase4GateTests(unittest.TestCase):
+    def _make_temp_root(self) -> Path:
+        base = Path(__file__).resolve().parent / ".tmp"
+        base.mkdir(parents=True, exist_ok=True)
+        root = base / f"phase4-policy-contract-{time.time_ns()}"
+        root.mkdir(parents=True, exist_ok=False)
+
+        def _cleanup() -> None:
+            for _ in range(5):
+                try:
+                    shutil.rmtree(root)
+                    return
+                except PermissionError:
+                    time.sleep(0.05)
+            shutil.rmtree(root, ignore_errors=True)
+
+        self.addCleanup(_cleanup)
+        return root
+
     def _make_state(self) -> PipelineState:
         return make_initial_state(
             topic="AI & Tech Daily Briefing",
@@ -70,6 +91,7 @@ class SourcePolicyPhase4GateTests(unittest.TestCase):
         )
 
     def test_metadata_only_policy_hard_blocks_extraction(self) -> None:
+        root = self._make_temp_root()
         state = self._make_state()
         selected_url = "https://example.com/blocked"
         state["selected_url"] = selected_url
@@ -82,15 +104,21 @@ class SourcePolicyPhase4GateTests(unittest.TestCase):
             }
         ]
 
-        final_state = article_extractor.run(state)
+        with (
+            patch.object(article_extractor, "_project_root", return_value=root),
+            patch.object(article_extractor, "_fetch_html") as fetch_html,
+        ):
+            final_state = article_extractor.run(state)
         self.assertTrue(final_state["article"]["metadata_only"])
         self.assertEqual("policy_blocked", final_state["article"]["extraction_status"])
         self.assertEqual(SCRAPE_POLICY_METADATA_ONLY, final_state["article"]["scrape_policy"])
         self.assertTrue(final_state["metrics"]["flags"]["phase4_policy_blocked_metadata_only"])
         self.assertFalse(final_state["metrics"]["flags"]["phase4_html_fetch_attempted"])
         self.assertEqual(1, final_state["metrics"]["counters"]["phase4_policy_blocked_count"])
+        fetch_html.assert_not_called()
 
     def test_full_scrape_allowed_policy_uses_normal_path(self) -> None:
+        root = self._make_temp_root()
         state = self._make_state()
         selected_url = "https://example.com/allowed"
         state["selected_url"] = selected_url
@@ -103,17 +131,27 @@ class SourcePolicyPhase4GateTests(unittest.TestCase):
             }
         ]
 
-        final_state = article_extractor.run(state)
-        self.assertFalse(final_state["article"]["metadata_only"])
-        self.assertEqual(
-            "full_scrape_allowed_placeholder",
-            final_state["article"]["extraction_status"],
+        html = (
+            "<html><head><title>Allowed Story</title></head><body>"
+            "<article><p>This is a clean paragraph for extraction testing with enough content.</p></article>"
+            "</body></html>"
         )
+        with (
+            patch.object(article_extractor, "_project_root", return_value=root),
+            patch.object(article_extractor, "_fetch_html", return_value=html) as fetch_html,
+        ):
+            final_state = article_extractor.run(state)
+        self.assertFalse(final_state["article"]["metadata_only"])
+        self.assertEqual("extracted", final_state["article"]["extraction_status"])
         self.assertEqual(SCRAPE_POLICY_FULL, final_state["article"]["scrape_policy"])
         self.assertFalse(final_state["metrics"]["flags"]["phase4_policy_blocked_metadata_only"])
         self.assertEqual(0, final_state["metrics"]["counters"]["phase4_policy_blocked_count"])
+        self.assertTrue(final_state["metrics"]["flags"]["phase4_html_fetch_attempted"])
+        self.assertTrue(final_state["metrics"]["flags"]["phase4_html_fetch_succeeded"])
+        fetch_html.assert_called_once_with(selected_url)
 
     def test_phase4_uses_fallback_lookup_when_policy_not_in_state(self) -> None:
+        root = self._make_temp_root()
         state = self._make_state()
         selected_url = "https://example.com/fallback"
         state["selected_url"] = selected_url
@@ -130,13 +168,15 @@ class SourcePolicyPhase4GateTests(unittest.TestCase):
             "_resolve_policy_from_db",
             return_value=SCRAPE_POLICY_METADATA_ONLY,
         ) as db_lookup:
-            final_state = article_extractor.run(state)
+            with patch.object(article_extractor, "_project_root", return_value=root):
+                final_state = article_extractor.run(state)
 
         db_lookup.assert_called_once_with(selected_url)
         self.assertTrue(final_state["article"]["metadata_only"])
         self.assertEqual("policy_blocked", final_state["article"]["extraction_status"])
 
     def test_phase4_unresolved_policy_fails_closed(self) -> None:
+        root = self._make_temp_root()
         state = self._make_state()
         selected_url = "https://example.com/unresolved-policy"
         state["selected_url"] = selected_url
@@ -149,7 +189,8 @@ class SourcePolicyPhase4GateTests(unittest.TestCase):
         ]
 
         with patch.object(article_extractor, "_resolve_policy_from_db", return_value=None) as db_lookup:
-            final_state = article_extractor.run(state)
+            with patch.object(article_extractor, "_project_root", return_value=root):
+                final_state = article_extractor.run(state)
 
         db_lookup.assert_called_once_with(selected_url)
         self.assertTrue(final_state["article"]["metadata_only"])

@@ -7,7 +7,11 @@
     "author",
     "published_at",
     "source_url",
-    "paragraphs"
+    "paragraphs",
+    "scrape_policy",
+    "metadata_only",
+    "extraction_status",
+    "policy_resolution_failed"
   ],
   "properties": {
     "title": {
@@ -27,6 +31,22 @@
       "items": {
         "type": "string"
       }
+    },
+    "scrape_policy": {
+      "type": "string",
+      "enum": [
+        "full_scrape_allowed",
+        "metadata_only"
+      ]
+    },
+    "metadata_only": {
+      "type": "boolean"
+    },
+    "extraction_status": {
+      "type": "string"
+    },
+    "policy_resolution_failed": {
+      "type": "boolean"
     }
   },
   "additionalProperties": false

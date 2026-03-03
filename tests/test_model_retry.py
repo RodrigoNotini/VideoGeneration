@@ -6,7 +6,7 @@ import types
 import unittest
 from unittest.mock import patch
 
-from agents import model_retry
+from core import model_retry
 
 
 class _ModelResponseError(Exception):

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import os
 from pathlib import Path
 from typing import Any
 
@@ -41,3 +42,8 @@ def resolve_scrape_policy(value: Any, *, fallback_to_full: bool = True) -> str:
         "Invalid scrape_policy. Expected one of: "
         + ", ".join(sorted(ALLOWED_SCRAPE_POLICIES))
     )
+
+
+def is_runtime_verbose_logging_enabled() -> bool:
+    value = str(os.getenv("VG_DEBUG_VERBOSE", "")).strip().lower()
+    return value in {"1", "true", "yes", "on"}

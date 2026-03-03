@@ -1,6 +1,6 @@
 # AI & Tech News -> YouTube Shorts Automation
 
-Phase 3 implementation of a replay-deterministic, production-stable multi-agent pipeline using LangGraph + SQLite + OpenAI.
+Phase 4 implementation of a replay-deterministic multi-agent pipeline using LangGraph + SQLite + OpenAI.
 
 ## Current Phase
 
@@ -10,43 +10,39 @@ Phase 3 implementation of a replay-deterministic, production-stable multi-agent 
 | 1 | RSS Discovery | DONE |
 | 2 | Theme URL Selection | DONE |
 | 3 | Interestingness Ranking | DONE |
-| 4 | Article Extraction | LOCKED |
+| 4 | Article Extraction | IN PROGRESS |
 | 5 | Script Generation | LOCKED |
 | 6 | Validation Loop | LOCKED |
 | 7 | Image Generation | LOCKED |
 | 8 | TTS & Timing | LOCKED |
 | 9 | Video Rendering | LOCKED |
 
-## Phase 3 Scope
+## Phase 4 Scope
 
-Phase 3 finalizes interestingness ranking from the Phase 2 subset and selects exactly one final URL.
+Phase 4 extracts clean structured article content from the Phase 3 winner URL and enforces source policy gating.
 
 Implemented:
-- Phase 3 ranker consumes only `state.ranked_items` from Phase 2.
-- Theme enforcement with strict allowed values: `AI` or `Tech`.
-- Criteria-based scoring policy with theme-specific rubric labels.
-- Model-based scoring with strict JSON schema response contract.
-- Deterministic retry policy:
-  - 1 retry on malformed/invalid model response.
-  - deterministic keyword-rubric fallback if retry also fails.
-- Deterministic tie-break policy:
-  - score descending
-  - `published_at` descending
-  - URL ascending
-- Exactly-one selection contract:
-  - non-empty subset -> first ranked URL becomes `selected_url`
-  - empty subset -> deterministic placeholder URL, `selection_count = 0`
-- Stability policy:
-  - controlled-variance overlap threshold `>= 0.9`
-  - threshold sourced from `phase3_ranker.stability.min_overlap_ratio`
-- Model/policy observability:
-  - model name, temperature, top_p, prompt version
-  - criteria policy version and tie-break policy
-  - retry/fallback metadata, token usage, latency
+- Source policy gate before extraction:
+  - `metadata_only` -> hard block, no HTML fetch attempt.
+  - `full_scrape_allowed` -> fetch and extract cleaned content.
+- Policy resolution order:
+  - ranked item metadata
+  - rss item metadata
+  - DB fallback by URL
+  - fail-closed fallback to `metadata_only`.
+- HTML extraction pipeline:
+  - fetch raw HTML for allowed sources
+  - remove blocked containers (`nav`, `footer`, `script`, ad-like containers)
+  - normalize title/author/published date/paragraphs deterministically.
+- Artifact contract:
+  - `outputs/article.json` always
+  - `outputs/article_raw.html` only when full extraction succeeds.
+- Safety boundary:
+  - raw HTML is never written into `state["article"]`.
+  - downstream receives only cleaned `article` payload.
 
-Not implemented in Phase 3:
-- Article extraction/scraping.
-- Script generation/validation.
+Not implemented in Phase 4:
+- Script generation and validation loop.
 - Image generation.
 - TTS.
 - Video rendering.
@@ -59,9 +55,11 @@ python -m venv .venv
 pip install -r requirements/base.txt
 pip install -r requirements/phase1.txt
 pip install -r requirements/phase2.txt
+pip install -r requirements/phase3.txt
+pip install -r requirements/phase4.txt
 ```
 
-`requirements/phase3.txt` intentionally introduces no additional third-party package beyond Phase 2.
+`requirements/phase3.txt` and `requirements/phase4.txt` currently introduce no additional third-party packages.
 
 Optional dev tools:
 
@@ -75,7 +73,7 @@ Copy `.env.example` to `.env` and set:
 
 - `OPENAI_API_KEY` (required from Phase 2 onward)
 
-The pipeline auto-loads `.env` from the project root using `python-dotenv`.
+The pipeline auto-loads `.env` from project root using `python-dotenv`.
 
 ## Run
 
@@ -101,6 +99,8 @@ Expected outputs after a successful run:
 - `outputs/ranked_items.json`
 - `outputs/selection.json`
 - `outputs/ranking_criteria_report.json`
+- `outputs/article.json`
+- `outputs/article_raw.html` (only when full extraction is allowed and succeeds)
 - `outputs/metadata.json`
 
 ## Key Configs
@@ -108,49 +108,29 @@ Expected outputs after a successful run:
 From `configs/pipeline.yaml`:
 - `theme: "AI"` (allowed: `AI`, `Tech`)
 - `max_articles_per_run: 50`
-- `phase2_selector.*` (Theme URL Selection)
-- `phase3_ranker.model: "gpt-4.1-mini"`
-- `phase3_ranker.prompt_version: "phase3-interestingness-ranker-v1"`
-- `phase3_ranker.criteria_policy_version: "phase3-interestingness-policy-v1"`
-- `phase3_ranker.target_selection_count: 1`
-- `phase3_ranker.tie_break_policy: "score_desc_then_published_at_desc_then_url_asc"`
-- `phase3_ranker.deterministic.temperature: 0.0`
-- `phase3_ranker.deterministic.top_p: 1.0`
-- `phase3_ranker.stability.min_overlap_ratio: 0.9`
+- `output_dir: "outputs"`
+- `database_path: "data/db/app.sqlite"`
+- `phase2_selector.*`
+- `phase3_ranker.*`
 
-From `configs/openai.yaml`:
-- `api_key_env_var: "OPENAI_API_KEY"`
-- `models.theme_selector: "gpt-4.1-mini"`
-- `models.interestingness_ranker: "gpt-4.1-mini"`
+From `configs/rss_feeds.yaml`:
+- each feed must define `scrape_policy` as one of:
+  - `full_scrape_allowed`
+  - `metadata_only`
 
 ## Source Access Policy
 
-Each feed in `configs/rss_feeds.yaml` must declare `scrape_policy`:
-- `full_scrape_allowed`
-- `metadata_only`
-
-Example:
-
-```yaml
-feeds:
-  - name: Wired
-    url: https://www.wired.com/feed/rss
-    scrape_policy: metadata_only
-  - name: TechCrunch
-    url: https://techcrunch.com/feed/
-    scrape_policy: full_scrape_allowed
-```
-
-Policy behavior:
-- Phase 1 persists `scrape_policy` in SQLite (`rss_items.scrape_policy`) and propagates it into state and artifacts.
-- Phase 2 and Phase 3 preserve policy as transport metadata; ranking logic is unchanged.
-- Phase 4 enforces a hard block when selected policy is `metadata_only` and returns a deterministic metadata-only article payload.
+Policy behavior across implemented phases:
+- Phase 1 persists `scrape_policy` in SQLite and propagates it into state/artifacts.
+- Phase 2 and Phase 3 preserve policy metadata while selecting/ranking.
+- Phase 4 enforces extraction gate with deterministic metadata-only fallback when blocked or unresolved.
 
 Policy field appears in:
 - `outputs/rss_items.json`
 - `outputs/theme_selected_urls.json`
 - `outputs/ranked_items.json`
 - `outputs/selection.json`
+- `outputs/article.json`
 
 ## Project Structure
 
@@ -158,11 +138,11 @@ Policy field appears in:
 VideoGeneration/
 |-- agents/
 |   |-- article_extractor.py
-|   |-- model_retry.py
 |   |-- relevance_ranker.py
 |   |-- rss_collector.py
 |   `-- theme_url_selector.py
 |-- core/
+|   |-- model_retry.py
 |   |-- config/
 |   |-- persistence/
 |   `-- state.py
@@ -189,6 +169,7 @@ VideoGeneration/
 |   |-- test_phase1_exit_criteria.py
 |   |-- test_phase2_theme_selector.py
 |   |-- test_phase3_relevance_ranker.py
+|   |-- test_phase4_article_extractor.py
 |   `-- test_source_policy_contract.py
 |-- prompts/
 |-- schemas/

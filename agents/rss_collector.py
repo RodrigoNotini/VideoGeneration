@@ -16,6 +16,7 @@ import requests
 from core.common.utils import (
     SCRAPE_POLICY_FULL,
     SCRAPE_POLICY_METADATA_ONLY,
+    is_runtime_verbose_logging_enabled,
     resolve_scrape_policy,
     sha256_text,
 )
@@ -269,6 +270,7 @@ def _fetch_feed_entries(feed_url: str) -> list[dict[str, Any]]:
 
 def run(state: PipelineState) -> PipelineState:
     next_state = copy_state(state)
+    verbose_runtime_logs = is_runtime_verbose_logging_enabled()
     feeds, pipeline_config = _load_runtime_configs()
     configured_max_articles = int(pipeline_config["max_articles_per_run"])
     max_articles = configured_max_articles
@@ -312,12 +314,22 @@ def run(state: PipelineState) -> PipelineState:
         if rotated_feeds
         else ""
     )
+    rotation_first_feed_name = (
+        str(rotated_feeds[0].get("name", "")).strip()
+        if rotated_feeds
+        else ""
+    )
     logger.info(
-        "RSS feed search order (start_index=%s, total=%s): %s",
+        "PHASE1_RSS_ROTATION start_index=%s total_feeds=%s first_feed=%s",
         feed_start_index,
         len(rotated_feeds),
-        " -> ".join(rotated_feed_order) if rotated_feed_order else "<none>",
+        rotation_first_feed_name or "<none>",
     )
+    if verbose_runtime_logs:
+        logger.debug(
+            "PHASE1_RSS_ROTATION_DETAIL ordered_feeds=%s",
+            " -> ".join(rotated_feed_order) if rotated_feed_order else "<none>",
+        )
 
     ordered_items: list[dict[str, str]] = []
     duplicates_dropped = 0
@@ -348,7 +360,7 @@ def run(state: PipelineState) -> PipelineState:
 
         if fetch_skipped:
             logger.info(
-                "RSS feed fetch skipped (inventory=%s, threshold=%s). Using DB items for ranking.",
+                "PHASE1_RSS_FETCH_SKIPPED inventory=%s threshold=%s source=db",
                 remaining_rows,
                 skip_fetch_threshold,
             )
@@ -367,31 +379,32 @@ def run(state: PipelineState) -> PipelineState:
                 source = str(feed["name"]).strip()
                 feed_url = str(feed["url"]).strip()
                 scrape_policy = _resolve_feed_policy(feed)
-                logger.info(
-                    "RSS feed attempt %s/%s: %s <%s> policy=%s",
-                    feed_index,
-                    len(rotated_feeds),
-                    source,
-                    feed_url,
-                    scrape_policy,
-                )
+                if verbose_runtime_logs:
+                    logger.debug(
+                        "PHASE1_RSS_FEED_ATTEMPT index=%s total=%s source=%s url=%s policy=%s",
+                        feed_index,
+                        len(rotated_feeds),
+                        source,
+                        feed_url,
+                        scrape_policy,
+                    )
                 try:
                     entries = _fetch_feed_entries(feed_url)
                     feeds_succeeded += 1
-                    logger.info(
-                        "RSS feed success: %s <%s> entries=%s",
-                        source,
-                        feed_url,
-                        len(entries),
-                    )
+                    if verbose_runtime_logs:
+                        logger.debug(
+                            "PHASE1_RSS_FEED_SUCCESS source=%s url=%s entries=%s",
+                            source,
+                            feed_url,
+                            len(entries),
+                        )
                 except RSSCollectorDependencyError:
                     raise
                 except Exception:
                     feeds_failed += 1
                     logger.exception(
-                        "RSS feed failed: %s <%s>",
+                        "PHASE1_RSS_FEED_FAILED source=%s",
                         source,
-                        feed_url,
                     )
                     continue
 
@@ -483,6 +496,19 @@ def run(state: PipelineState) -> PipelineState:
         (not fetch_skipped)
         and
         not flags["rss_target_reached"] and attempted_feeds == len(feeds)
+    )
+
+    logger.info(
+        "PHASE1_RSS_SUMMARY items=%s target=%s feeds_total=%s feeds_succeeded=%s "
+        "feeds_failed=%s duplicates_dropped=%s fetch_skipped=%s inventory_after_cleanup=%s",
+        counters["rss_items_count"],
+        counters["rss_items_target_count"],
+        counters["rss_feeds_total"],
+        counters["rss_feeds_succeeded"],
+        counters["rss_feeds_failed"],
+        counters["rss_duplicates_dropped"],
+        flags["rss_fetch_skipped_threshold_hit"],
+        counters["rss_inventory_count_after_cleanup"],
     )
 
     if not state_items:

@@ -13,8 +13,8 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from agents.model_retry import score_with_retry_and_fallback
-from core.common.utils import resolve_scrape_policy, write_json
+from core.model_retry import score_with_retry_and_fallback
+from core.common.utils import is_runtime_verbose_logging_enabled, resolve_scrape_policy, write_json
 from core.config.config_loader import load_all_configs
 from core.state import PipelineState, copy_state
 
@@ -524,6 +524,7 @@ def _score_candidates(
         unexpected_error_factory=_unexpected_error,
         logger=logger,
         fallback_log_template="Phase 2 selector model failed after retry; using deterministic fallback. error=%s",
+        operation_name="phase2_theme_selector_scoring",
     )
 
 
@@ -542,7 +543,7 @@ def _published_sort_parts(published_at: str) -> tuple[int, float]:
 
 
 def _sort_scored_candidates(
-    scored: list[ScoredCandidate], tie_break_policy: str
+    scored: list[ScoredCandidate], tie_break_policy: str, *, verbose_runtime_logs: bool
 ) -> tuple[list[ScoredCandidate], int]:
     ties_by_score: dict[float, list[ScoredCandidate]] = {}
     for item in scored:
@@ -552,23 +553,30 @@ def _sort_scored_candidates(
     for score, tie_group in sorted(ties_by_score.items(), key=lambda entry: entry[0], reverse=True):
         if len(tie_group) < 2:
             continue
-        ordered_urls = [
-            _item.candidate.canonical_url
-            for _item in sorted(
-                tie_group,
-                key=lambda value: (
-                    _published_sort_parts(value.candidate.published_at),
-                    value.candidate.canonical_url,
-                ),
-            )
-        ]
         tie_break_events += 1
         logger.info(
-            "Phase 2 tie-break applied score=%s policy=%s urls=%s",
+            "PHASE2_TIE_BREAK event=%s score=%s group_size=%s policy=%s",
+            tie_break_events,
             score,
+            len(tie_group),
             tie_break_policy,
-            ordered_urls,
         )
+        if verbose_runtime_logs:
+            ordered_urls = [
+                _item.candidate.canonical_url
+                for _item in sorted(
+                    tie_group,
+                    key=lambda value: (
+                        _published_sort_parts(value.candidate.published_at),
+                        value.candidate.canonical_url,
+                    ),
+                )
+            ]
+            logger.debug(
+                "PHASE2_TIE_BREAK_DETAIL event=%s urls=%s",
+                tie_break_events,
+                ordered_urls,
+            )
 
     ordered = sorted(
         scored,
@@ -608,6 +616,7 @@ def _build_selected_items(scored_items: list[ScoredCandidate], output_count: int
 
 def run(state: PipelineState) -> PipelineState:
     next_state = copy_state(state)
+    verbose_runtime_logs = is_runtime_verbose_logging_enabled()
     _load_project_env()
     pipeline_config, openai_config = _load_runtime_configs()
     theme = _resolve_theme(pipeline_config)
@@ -653,6 +662,7 @@ def run(state: PipelineState) -> PipelineState:
     ordered_scored, tie_break_events = _sort_scored_candidates(
         scored_candidates,
         settings["tie_break_policy"],
+        verbose_runtime_logs=verbose_runtime_logs,
     )
     output_count, policy_warning = _resolve_output_count(
         len(ordered_scored),
@@ -682,6 +692,16 @@ def run(state: PipelineState) -> PipelineState:
     flags["phase2_selector_policy_warning_low_input"] = policy_warning
     flags["phase2_selector_fallback_used"] = bool(scoring_metadata["fallback_used"])
     flags["phase2_selector_tie_break_policy"] = settings["tie_break_policy"]
+    logger.info(
+        "PHASE2_SELECTOR_SUMMARY theme=%s input=%s output=%s retries=%s fallback=%s tie_break_events=%s latency_ms=%s",
+        theme,
+        counters["phase2_selector_input_count"],
+        counters["phase2_selector_output_count"],
+        counters["phase2_selector_retry_count"],
+        flags["phase2_selector_fallback_used"],
+        counters["phase2_selector_tie_break_events"],
+        counters["phase2_selector_model_latency_ms"],
+    )
 
     output_dir = _project_root() / str(pipeline_config["output_dir"])
     artifact_path = output_dir / "theme_selected_urls.json"

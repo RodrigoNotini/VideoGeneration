@@ -1,1 +1,3 @@
-﻿# Phase 4 dependencies (Script Generation)
+# Phase 4 dependencies (Article Extraction)
+# No additional third-party dependencies are introduced in Phase 4.
+# Phase 4 reuses packages from prior phases (notably requests from phase1).

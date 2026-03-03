@@ -13,7 +13,7 @@ from typing import Any
 
 from dotenv import load_dotenv
 
-from agents.model_retry import score_with_retry_and_fallback
+from core.model_retry import score_with_retry_and_fallback
 from core.common.utils import resolve_scrape_policy, write_json
 from core.config.config_loader import load_all_configs
 from core.state import PipelineState, copy_state
@@ -713,6 +713,7 @@ def _score_candidates(
         logger=logger,
         fallback_log_template="Phase 3 ranker model failed after retry; using deterministic fallback. error=%s",
         include_last_error=True,
+        operation_name="phase3_interestingness_ranker_scoring",
     )
 
 
@@ -752,7 +753,7 @@ def _sort_scored_candidates(
     )
     if tie_break_events > 0:
         logger.info(
-            "Phase 3 tie-break applied events=%s policy=%s",
+            "PHASE3_TIE_BREAK events=%s policy=%s",
             tie_break_events,
             tie_break_policy,
         )
@@ -948,6 +949,16 @@ def run(state: PipelineState) -> PipelineState:
     flags["phase3_ranker_fallback_used"] = bool(scoring_metadata["fallback_used"])
     flags["phase3_ranker_stability_min_overlap_ratio"] = settings["min_overlap_ratio"]
     flags["phase3_ranker_criteria_policy_version"] = settings["criteria_policy_version"]
+    logger.info(
+        "PHASE3_RANKER_SUMMARY theme=%s input=%s output=%s retries=%s fallback=%s tie_break_events=%s latency_ms=%s",
+        theme,
+        counters["phase3_ranker_input_count"],
+        counters["phase3_ranker_output_count"],
+        counters["phase3_ranker_retry_count"],
+        flags["phase3_ranker_fallback_used"],
+        counters["phase3_ranker_tie_break_events"],
+        counters["phase3_ranker_model_latency_ms"],
+    )
 
     output_dir = _project_root() / str(pipeline_config["output_dir"])
     _write_artifacts(

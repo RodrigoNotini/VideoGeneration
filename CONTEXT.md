@@ -456,6 +456,14 @@ All runs must log:
 - Template version
 - Model version
 
+Runtime Log Organization Policy:
+
+- Runtime console logs must be concise, phase-scoped, and action-oriented.
+- Default runtime mode must prioritize summaries (counts, retries, latency, fallback decisions) over item-level dumps.
+- Repeated full URL sequences must not be emitted in default runtime INFO logs.
+- Detailed URL-level diagnostics are allowed only in explicit debug mode (`VG_DEBUG_VERBOSE=1`).
+- Detailed observability remains available in output artifacts/metrics files; runtime logs are not a replacement for artifacts.
+
 ---
 
 # 11. Success Criteria

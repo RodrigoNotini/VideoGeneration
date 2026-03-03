@@ -31,6 +31,15 @@ Determinism & Stability Rule (Global):
 - Any stochastic component (LLM sampling, ranking ties, retries, fallbacks) must be explicitly controlled where possible and always logged.
 - Model parameters affecting output must be versioned and logged.
 
+Runtime Logging Organization Rule (Global):
+
+- Runtime logs must be readable during execution and optimized for debugging decisions.
+- Default runtime logging must be concise and summary-first:
+  - include phase start/end, counters, retry/fallback outcomes, and latency.
+  - avoid repetitive item-level URL dumps in INFO logs.
+- Verbose URL-level diagnostics must be opt-in through `VG_DEBUG_VERBOSE=1`.
+- Output artifacts and metrics remain the source of detailed run records and must not be reduced to compensate for runtime log cleanup.
+
 ---
 
 # Documentation Policy (Mandatory)
@@ -95,7 +104,7 @@ If a phase introduces new third-party libraries, it MUST update `requirements/ph
 | 1 | RSS Discovery | DONE |
 | 2 | Theme URL Selection | DONE |
 | 3 | Interestingness Ranking | DONE |
-| 4 | Article Extraction | LOCKED |
+| 4 | Article Extraction | IN PROGRESS |
 | 5 | Script Generation | LOCKED |
 | 6 | Validation Loop | LOCKED |
 | 7 | Image Generation | LOCKED |
