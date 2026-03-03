@@ -261,6 +261,18 @@ Select a theme-aligned subset of candidate URLs before final interestingness ran
 - Keep selector policy range-based (25–35) until an exact fixed default target is formally locked.
 - When input is below the lower bound, pass through all valid candidates and emit a policy-warning metric.
 - Apply deterministic tie-breaking and stable ordering for identical inputs.
+- Persist per-run candidate theme scores to a historical table (`rss_item_theme_scores`) for future reuse.
+- Add post-selection historical replacement mechanism:
+  - identify worst selected items by ascending score (deterministic tie-break),
+  - query historical pool using same-theme-only, freshness window, and tolerance gate,
+  - apply deterministic one-to-one replacements for better historical candidates only.
+- Configure replacement behavior in `phase2_selector`:
+  - `replacement_enabled`
+  - `replacement_worst_count`
+  - `replacement_score_tol`
+  - `replacement_freshness_days`
+  - `replacement_history_semantics` (`max_per_url_theme`)
+- Enforce historical ranking semantics as max score per `(theme, url)`.
 - Forward selected subset to Phase 3 for final article selection.
 
 ## Deliverables
@@ -277,6 +289,14 @@ Select a theme-aligned subset of candidate URLs before final interestingness ran
   - `< 25` input -> pass-through with warning.
   - `25..35` input -> pass-through.
   - `> 35` input -> bounded target selection (default 30).
+- Historical score persistence verified for each run with model/prompt/run metadata.
+- Worst-item replacement path verified (up to configured worst-count, partial replacement allowed).
+- Same-theme-only replacement rule verified.
+- Replacement tolerance gate (`score >= replacement_score_tol`) verified.
+- Freshness window enforcement verified (default 7 days).
+- Deterministic replacement ordering/results verified for fixed inputs.
+- Output cardinality remains enforced after replacement.
+- Replacement observability verified across metrics, logs, and artifact block.
 - Dependencies isolated.
 - Model parameters logged.
 - README updated accurately.

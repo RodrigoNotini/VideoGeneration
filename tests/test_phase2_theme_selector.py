@@ -8,13 +8,15 @@ import sys
 import time
 import types
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 from unittest.mock import patch
 
 from agents import relevance_ranker, theme_url_selector
 from agents.reporter import Reporter, run as reporter_agent_run
-from core.common.utils import SCRAPE_POLICY_FULL, SCRAPE_POLICY_METADATA_ONLY
+from core.common.utils import SCRAPE_POLICY_FULL, SCRAPE_POLICY_METADATA_ONLY, sha256_text
+from core.persistence.db import initialize_database, insert_theme_scores
 from core.state import PipelineState, make_initial_state
 from graphs import news_to_video_graph
 
@@ -67,6 +69,11 @@ class Phase2ThemeSelectorTests(unittest.TestCase):
                 "lower_bound": 25,
                 "upper_bound": 35,
                 "tie_break_policy": "published_at_desc_then_canonical_url_asc",
+                "replacement_enabled": True,
+                "replacement_worst_count": 10,
+                "replacement_score_tol": 0.55,
+                "replacement_freshness_days": 7,
+                "replacement_history_semantics": "max_per_url_theme",
                 "deterministic": {"temperature": 0.0, "top_p": 1.0},
             },
             "versions": {
@@ -103,9 +110,86 @@ class Phase2ThemeSelectorTests(unittest.TestCase):
                     "source": "ExampleFeed",
                     "scrape_policy": SCRAPE_POLICY_FULL,
                     "published_at": f"2026-01-{day:02d}T00:00:00Z",
+                    "discovered_at": f"2026-01-{day:02d}T00:00:00Z",
                 }
             )
         return items
+
+    def _db_path(self, root: Path) -> Path:
+        return root / "data" / "db" / "app.sqlite"
+
+    def _seed_rss_metadata(
+        self,
+        *,
+        root: Path,
+        rows: list[dict[str, str]],
+    ) -> None:
+        connection = initialize_database(self._db_path(root))
+        try:
+            with connection:
+                connection.executemany(
+                    """
+                    INSERT OR IGNORE INTO rss_items (
+                        url, title, title_hash, source, scrape_policy, published_at, discovered_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [
+                        (
+                            row["url"],
+                            row["title"],
+                            sha256_text(row["title"].lower()),
+                            row["source"],
+                            row.get("scrape_policy", SCRAPE_POLICY_FULL),
+                            row.get("published_at", ""),
+                            row.get("discovered_at", "2026-01-01T00:00:00Z"),
+                        )
+                        for row in rows
+                    ],
+                )
+        finally:
+            connection.close()
+
+    def _seed_history_scores(
+        self,
+        *,
+        root: Path,
+        rows: list[dict[str, Any]],
+    ) -> None:
+        connection = initialize_database(self._db_path(root))
+        try:
+            insert_theme_scores(connection, rows)
+        finally:
+            connection.close()
+
+    def _iso_days_ago(self, days: int) -> str:
+        now = datetime.now(timezone.utc).replace(microsecond=0)
+        return (now - timedelta(days=days)).isoformat().replace("+00:00", "Z")
+
+    def _history_row(
+        self,
+        *,
+        url: str,
+        theme: str,
+        score: float,
+        reason: str,
+        source: str = "HistoricalSource",
+        published_at: str = "2026-01-10T00:00:00Z",
+        discovered_at: str | None = None,
+    ) -> dict[str, Any]:
+        now_iso = datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+        return {
+            "url": url,
+            "theme": theme,
+            "score": score,
+            "reason": reason,
+            "source": source,
+            "published_at": published_at,
+            "discovered_at": discovered_at or now_iso,
+            "run_id": "seed_run_history",
+            "scored_at": now_iso,
+            "model_name": "seed-model",
+            "prompt_version": "seed-prompt",
+        }
 
     def _default_score_candidates(
         self,
@@ -129,6 +213,27 @@ class Phase2ThemeSelectorTests(unittest.TestCase):
             "model_latency_ms": 5,
             "token_usage": {"prompt_tokens": 10, "completion_tokens": 20, "total_tokens": 30},
         }
+
+    def _score_candidates_by_url(
+        self,
+        score_by_url: dict[str, float],
+        *,
+        reason: str = "Mocked model score.",
+    ) -> Any:
+        def _impl(**kwargs: Any) -> tuple[dict[int, tuple[float, str]], dict[str, Any]]:
+            candidates = kwargs["candidates"]
+            scores = {
+                candidate.item_id: (round(float(score_by_url[candidate.url]), 6), reason)
+                for candidate in candidates
+            }
+            return scores, {
+                "retry_count": 0,
+                "fallback_used": False,
+                "model_latency_ms": 5,
+                "token_usage": {"prompt_tokens": 7, "completion_tokens": 9, "total_tokens": 16},
+            }
+
+        return _impl
 
     def _run_selector(
         self,
@@ -360,6 +465,10 @@ class Phase2ThemeSelectorTests(unittest.TestCase):
         self.assertTrue(final_state["metrics"]["flags"]["phase2_selector_fallback_used"])
         self.assertEqual(1, final_state["metrics"]["counters"]["phase2_selector_retry_count"])
         self.assertEqual(6, len(final_state["ranked_items"]))
+        self.assertIn("phase2_selector_replacement_attempted_count", final_state["metrics"]["counters"])
+        self.assertIn("phase2_selector_replacement_applied_count", final_state["metrics"]["counters"])
+        self.assertIn("phase2_selector_replacement_db_pool_count", final_state["metrics"]["counters"])
+        self.assertGreaterEqual(final_state["metrics"]["counters"]["phase2_selector_scores_persisted_count"], 1)
 
     def test_unexpected_model_error_is_re_raised_with_context(self) -> None:
         root = self._make_temp_root()
@@ -398,6 +507,7 @@ class Phase2ThemeSelectorTests(unittest.TestCase):
             scrape_policy=SCRAPE_POLICY_FULL,
             published_at="2026-01-01T00:00:00Z",
             summary="Summary",
+            discovered_at="2026-01-01T00:00:00Z",
         )
         captured_kwargs: dict[str, Any] = {}
         captured_timeout: float | None = None
@@ -529,6 +639,633 @@ class Phase2ThemeSelectorTests(unittest.TestCase):
         artifact = json.loads((root / "outputs" / "theme_selected_urls.json").read_text(encoding="utf-8"))
         self.assertIn("scrape_policy", artifact["selected_items"][0])
         self.assertEqual(SCRAPE_POLICY_METADATA_ONLY, artifact["selected_items"][0]["scrape_policy"])
+
+    def test_replacement_applies_to_worst_items_when_db_has_eligible_candidates(self) -> None:
+        root = self._make_temp_root()
+        rss_items = self._make_rss_items(6)
+        score_by_url = {
+            rss_items[0]["url"]: 0.95,
+            rss_items[1]["url"]: 0.90,
+            rss_items[2]["url"]: 0.85,
+            rss_items[3]["url"]: 0.80,
+            rss_items[4]["url"]: 0.60,
+            rss_items[5]["url"]: 0.59,
+        }
+        replacement_a = "https://history.example.com/replacement-a"
+        replacement_b = "https://history.example.com/replacement-b"
+        self._seed_rss_metadata(
+            root=root,
+            rows=[
+                *rss_items,
+                {
+                    "url": replacement_a,
+                    "title": "Historical Replacement A",
+                    "source": "HistoricalFeed",
+                    "scrape_policy": SCRAPE_POLICY_METADATA_ONLY,
+                    "published_at": "2026-01-20T00:00:00Z",
+                    "discovered_at": self._iso_days_ago(1),
+                },
+                {
+                    "url": replacement_b,
+                    "title": "Historical Replacement B",
+                    "source": "HistoricalFeed",
+                    "scrape_policy": SCRAPE_POLICY_FULL,
+                    "published_at": "2026-01-19T00:00:00Z",
+                    "discovered_at": self._iso_days_ago(1),
+                },
+            ],
+        )
+        self._seed_history_scores(
+            root=root,
+            rows=[
+                self._history_row(
+                    url=replacement_a,
+                    theme="AI",
+                    score=0.99,
+                    reason="best historical candidate",
+                    discovered_at=self._iso_days_ago(1),
+                ),
+                self._history_row(
+                    url=replacement_b,
+                    theme="AI",
+                    score=0.98,
+                    reason="second historical candidate",
+                    discovered_at=self._iso_days_ago(1),
+                ),
+            ],
+        )
+        config = self._make_pipeline_config(
+            "AI",
+            selector_overrides={"target_count": 6, "lower_bound": 1, "upper_bound": 6, "replacement_worst_count": 2},
+        )
+
+        final_state = self._run_selector(
+            root=root,
+            theme="AI",
+            rss_items=rss_items,
+            score_side_effect=self._score_candidates_by_url(score_by_url),
+            pipeline_config=config,
+        )
+
+        selected_urls = [item["url"] for item in final_state["ranked_items"]]
+        self.assertIn(replacement_a, selected_urls)
+        self.assertIn(replacement_b, selected_urls)
+        self.assertNotIn(rss_items[4]["url"], selected_urls)
+        self.assertNotIn(rss_items[5]["url"], selected_urls)
+        self.assertEqual(2, final_state["metrics"]["counters"]["phase2_selector_replacement_applied_count"])
+        replacement_a_item = next(item for item in final_state["ranked_items"] if item["url"] == replacement_a)
+        self.assertEqual(SCRAPE_POLICY_METADATA_ONLY, replacement_a_item["scrape_policy"])
+
+    def test_replacement_uses_same_theme_only(self) -> None:
+        root = self._make_temp_root()
+        rss_items = self._make_rss_items(6)
+        score_by_url = {
+            rss_items[0]["url"]: 0.95,
+            rss_items[1]["url"]: 0.90,
+            rss_items[2]["url"]: 0.85,
+            rss_items[3]["url"]: 0.80,
+            rss_items[4]["url"]: 0.70,
+            rss_items[5]["url"]: 0.60,
+        }
+        ai_replacement = "https://history.example.com/ai-replacement"
+        tech_replacement = "https://history.example.com/tech-replacement"
+        self._seed_rss_metadata(
+            root=root,
+            rows=[
+                *rss_items,
+                {
+                    "url": ai_replacement,
+                    "title": "AI replacement",
+                    "source": "History",
+                    "scrape_policy": SCRAPE_POLICY_FULL,
+                    "published_at": "2026-01-20T00:00:00Z",
+                    "discovered_at": self._iso_days_ago(1),
+                },
+                {
+                    "url": tech_replacement,
+                    "title": "Tech replacement",
+                    "source": "History",
+                    "scrape_policy": SCRAPE_POLICY_FULL,
+                    "published_at": "2026-01-21T00:00:00Z",
+                    "discovered_at": self._iso_days_ago(1),
+                },
+            ],
+        )
+        self._seed_history_scores(
+            root=root,
+            rows=[
+                self._history_row(
+                    url=tech_replacement,
+                    theme="Tech",
+                    score=0.99,
+                    reason="wrong theme",
+                    discovered_at=self._iso_days_ago(1),
+                ),
+                self._history_row(
+                    url=ai_replacement,
+                    theme="AI",
+                    score=0.96,
+                    reason="correct theme",
+                    discovered_at=self._iso_days_ago(1),
+                ),
+            ],
+        )
+        config = self._make_pipeline_config(
+            "AI",
+            selector_overrides={"target_count": 6, "lower_bound": 1, "upper_bound": 6, "replacement_worst_count": 1},
+        )
+
+        final_state = self._run_selector(
+            root=root,
+            theme="AI",
+            rss_items=rss_items,
+            score_side_effect=self._score_candidates_by_url(score_by_url),
+            pipeline_config=config,
+        )
+        selected_urls = [item["url"] for item in final_state["ranked_items"]]
+        self.assertIn(ai_replacement, selected_urls)
+        self.assertNotIn(tech_replacement, selected_urls)
+
+    def test_replacement_excludes_already_selected_urls(self) -> None:
+        root = self._make_temp_root()
+        rss_items = self._make_rss_items(6)
+        score_by_url = {
+            rss_items[0]["url"]: 0.95,
+            rss_items[1]["url"]: 0.90,
+            rss_items[2]["url"]: 0.85,
+            rss_items[3]["url"]: 0.80,
+            rss_items[4]["url"]: 0.70,
+            rss_items[5]["url"]: 0.60,
+        }
+        self._seed_rss_metadata(root=root, rows=rss_items)
+        self._seed_history_scores(
+            root=root,
+            rows=[
+                self._history_row(
+                    url=rss_items[5]["url"],
+                    theme="AI",
+                    score=0.99,
+                    reason="selected url should be excluded",
+                    discovered_at=self._iso_days_ago(1),
+                )
+            ],
+        )
+        config = self._make_pipeline_config(
+            "AI",
+            selector_overrides={"target_count": 6, "lower_bound": 1, "upper_bound": 6, "replacement_worst_count": 1},
+        )
+
+        final_state = self._run_selector(
+            root=root,
+            theme="AI",
+            rss_items=rss_items,
+            score_side_effect=self._score_candidates_by_url(score_by_url),
+            pipeline_config=config,
+        )
+        self.assertEqual(0, final_state["metrics"]["counters"]["phase2_selector_replacement_applied_count"])
+        self.assertEqual(
+            {item["url"] for item in rss_items},
+            {item["url"] for item in final_state["ranked_items"]},
+        )
+
+    def test_replacement_requires_score_at_or_above_tol(self) -> None:
+        root = self._make_temp_root()
+        rss_items = self._make_rss_items(6)
+        score_by_url = {
+            rss_items[0]["url"]: 0.95,
+            rss_items[1]["url"]: 0.90,
+            rss_items[2]["url"]: 0.85,
+            rss_items[3]["url"]: 0.80,
+            rss_items[4]["url"]: 0.70,
+            rss_items[5]["url"]: 0.60,
+        }
+        replacement_url = "https://history.example.com/below-tol"
+        self._seed_rss_metadata(
+            root=root,
+            rows=[
+                *rss_items,
+                {
+                    "url": replacement_url,
+                    "title": "Below tol",
+                    "source": "History",
+                    "scrape_policy": SCRAPE_POLICY_FULL,
+                    "published_at": "2026-01-20T00:00:00Z",
+                    "discovered_at": self._iso_days_ago(1),
+                },
+            ],
+        )
+        self._seed_history_scores(
+            root=root,
+            rows=[
+                self._history_row(
+                    url=replacement_url,
+                    theme="AI",
+                    score=0.79,
+                    reason="below configured tolerance",
+                    discovered_at=self._iso_days_ago(1),
+                )
+            ],
+        )
+        config = self._make_pipeline_config(
+            "AI",
+            selector_overrides={
+                "target_count": 6,
+                "lower_bound": 1,
+                "upper_bound": 6,
+                "replacement_worst_count": 1,
+                "replacement_score_tol": 0.80,
+            },
+        )
+
+        final_state = self._run_selector(
+            root=root,
+            theme="AI",
+            rss_items=rss_items,
+            score_side_effect=self._score_candidates_by_url(score_by_url),
+            pipeline_config=config,
+        )
+        self.assertEqual(0, final_state["metrics"]["counters"]["phase2_selector_replacement_applied_count"])
+        self.assertNotIn(replacement_url, [item["url"] for item in final_state["ranked_items"]])
+
+    def test_replacement_uses_max_score_per_url_theme_semantics(self) -> None:
+        root = self._make_temp_root()
+        rss_items = self._make_rss_items(6)
+        score_by_url = {
+            rss_items[0]["url"]: 0.95,
+            rss_items[1]["url"]: 0.90,
+            rss_items[2]["url"]: 0.85,
+            rss_items[3]["url"]: 0.80,
+            rss_items[4]["url"]: 0.70,
+            rss_items[5]["url"]: 0.60,
+        }
+        replacement_url = "https://history.example.com/max-semantics"
+        self._seed_rss_metadata(
+            root=root,
+            rows=[
+                *rss_items,
+                {
+                    "url": replacement_url,
+                    "title": "Max semantics replacement",
+                    "source": "History",
+                    "scrape_policy": SCRAPE_POLICY_FULL,
+                    "published_at": "2026-01-20T00:00:00Z",
+                    "discovered_at": self._iso_days_ago(1),
+                },
+            ],
+        )
+        self._seed_history_scores(
+            root=root,
+            rows=[
+                self._history_row(
+                    url=replacement_url,
+                    theme="AI",
+                    score=0.65,
+                    reason="low historical score",
+                    discovered_at=self._iso_days_ago(1),
+                ),
+                self._history_row(
+                    url=replacement_url,
+                    theme="AI",
+                    score=0.96,
+                    reason="high historical score",
+                    discovered_at=self._iso_days_ago(1),
+                ),
+            ],
+        )
+        config = self._make_pipeline_config(
+            "AI",
+            selector_overrides={"target_count": 6, "lower_bound": 1, "upper_bound": 6, "replacement_worst_count": 1},
+        )
+
+        final_state = self._run_selector(
+            root=root,
+            theme="AI",
+            rss_items=rss_items,
+            score_side_effect=self._score_candidates_by_url(score_by_url),
+            pipeline_config=config,
+        )
+        selected_item = next(item for item in final_state["ranked_items"] if item["url"] == replacement_url)
+        self.assertEqual(0.96, selected_item["theme_match_score"])
+        self.assertIn("high historical score", selected_item["selection_reason"])
+        self.assertEqual(
+            "max_per_url_theme",
+            final_state["metrics"]["flags"]["phase2_selector_replacement_semantics"],
+        )
+
+    def test_replacement_respects_freshness_window_7_days(self) -> None:
+        root = self._make_temp_root()
+        rss_items = self._make_rss_items(6)
+        score_by_url = {
+            rss_items[0]["url"]: 0.95,
+            rss_items[1]["url"]: 0.90,
+            rss_items[2]["url"]: 0.85,
+            rss_items[3]["url"]: 0.80,
+            rss_items[4]["url"]: 0.70,
+            rss_items[5]["url"]: 0.60,
+        }
+        stale_replacement = "https://history.example.com/stale-replacement"
+        self._seed_rss_metadata(
+            root=root,
+            rows=[
+                *rss_items,
+                {
+                    "url": stale_replacement,
+                    "title": "Stale replacement",
+                    "source": "History",
+                    "scrape_policy": SCRAPE_POLICY_FULL,
+                    "published_at": "2026-01-20T00:00:00Z",
+                    "discovered_at": self._iso_days_ago(8),
+                },
+            ],
+        )
+        self._seed_history_scores(
+            root=root,
+            rows=[
+                self._history_row(
+                    url=stale_replacement,
+                    theme="AI",
+                    score=0.99,
+                    reason="stale candidate",
+                    discovered_at=self._iso_days_ago(8),
+                )
+            ],
+        )
+        config = self._make_pipeline_config(
+            "AI",
+            selector_overrides={"target_count": 6, "lower_bound": 1, "upper_bound": 6, "replacement_worst_count": 1},
+        )
+
+        final_state = self._run_selector(
+            root=root,
+            theme="AI",
+            rss_items=rss_items,
+            score_side_effect=self._score_candidates_by_url(score_by_url),
+            pipeline_config=config,
+        )
+        self.assertEqual(0, final_state["metrics"]["counters"]["phase2_selector_replacement_applied_count"])
+        self.assertNotIn(stale_replacement, [item["url"] for item in final_state["ranked_items"]])
+
+    def test_replacement_partial_when_pool_less_than_worst_count(self) -> None:
+        root = self._make_temp_root()
+        rss_items = self._make_rss_items(6)
+        score_by_url = {
+            rss_items[0]["url"]: 0.95,
+            rss_items[1]["url"]: 0.90,
+            rss_items[2]["url"]: 0.85,
+            rss_items[3]["url"]: 0.80,
+            rss_items[4]["url"]: 0.70,
+            rss_items[5]["url"]: 0.60,
+        }
+        replacement_a = "https://history.example.com/partial-a"
+        replacement_b = "https://history.example.com/partial-b"
+        self._seed_rss_metadata(
+            root=root,
+            rows=[
+                *rss_items,
+                {
+                    "url": replacement_a,
+                    "title": "Partial A",
+                    "source": "History",
+                    "scrape_policy": SCRAPE_POLICY_FULL,
+                    "published_at": "2026-01-20T00:00:00Z",
+                    "discovered_at": self._iso_days_ago(1),
+                },
+                {
+                    "url": replacement_b,
+                    "title": "Partial B",
+                    "source": "History",
+                    "scrape_policy": SCRAPE_POLICY_FULL,
+                    "published_at": "2026-01-19T00:00:00Z",
+                    "discovered_at": self._iso_days_ago(1),
+                },
+            ],
+        )
+        self._seed_history_scores(
+            root=root,
+            rows=[
+                self._history_row(
+                    url=replacement_a,
+                    theme="AI",
+                    score=0.99,
+                    reason="partial replacement A",
+                    discovered_at=self._iso_days_ago(1),
+                ),
+                self._history_row(
+                    url=replacement_b,
+                    theme="AI",
+                    score=0.98,
+                    reason="partial replacement B",
+                    discovered_at=self._iso_days_ago(1),
+                ),
+            ],
+        )
+        config = self._make_pipeline_config(
+            "AI",
+            selector_overrides={"target_count": 6, "lower_bound": 1, "upper_bound": 6, "replacement_worst_count": 4},
+        )
+
+        final_state = self._run_selector(
+            root=root,
+            theme="AI",
+            rss_items=rss_items,
+            score_side_effect=self._score_candidates_by_url(score_by_url),
+            pipeline_config=config,
+        )
+        self.assertEqual(4, final_state["metrics"]["counters"]["phase2_selector_replacement_attempted_count"])
+        self.assertEqual(2, final_state["metrics"]["counters"]["phase2_selector_replacement_applied_count"])
+        self.assertEqual(2, final_state["metrics"]["counters"]["phase2_selector_replacement_db_pool_count"])
+
+    def test_replacement_noop_when_pool_empty(self) -> None:
+        root = self._make_temp_root()
+        rss_items = self._make_rss_items(6)
+        score_by_url = {
+            rss_items[0]["url"]: 0.95,
+            rss_items[1]["url"]: 0.90,
+            rss_items[2]["url"]: 0.85,
+            rss_items[3]["url"]: 0.80,
+            rss_items[4]["url"]: 0.70,
+            rss_items[5]["url"]: 0.60,
+        }
+        self._seed_rss_metadata(root=root, rows=rss_items)
+        config = self._make_pipeline_config(
+            "AI",
+            selector_overrides={"target_count": 6, "lower_bound": 1, "upper_bound": 6, "replacement_worst_count": 3},
+        )
+
+        final_state = self._run_selector(
+            root=root,
+            theme="AI",
+            rss_items=rss_items,
+            score_side_effect=self._score_candidates_by_url(score_by_url),
+            pipeline_config=config,
+        )
+        self.assertEqual(3, final_state["metrics"]["counters"]["phase2_selector_replacement_attempted_count"])
+        self.assertEqual(0, final_state["metrics"]["counters"]["phase2_selector_replacement_applied_count"])
+        self.assertEqual(0, final_state["metrics"]["counters"]["phase2_selector_replacement_db_pool_count"])
+
+    def test_replacement_preserves_output_cardinality_and_deterministic_order(self) -> None:
+        rss_items = self._make_rss_items(6)
+        score_by_url = {
+            rss_items[0]["url"]: 0.95,
+            rss_items[1]["url"]: 0.90,
+            rss_items[2]["url"]: 0.85,
+            rss_items[3]["url"]: 0.80,
+            rss_items[4]["url"]: 0.60,
+            rss_items[5]["url"]: 0.59,
+        }
+        replacement_a = "https://history.example.com/deterministic-a"
+        replacement_b = "https://history.example.com/deterministic-b"
+
+        def _run_once(root: Path) -> PipelineState:
+            self._seed_rss_metadata(
+                root=root,
+                rows=[
+                    *rss_items,
+                    {
+                        "url": replacement_a,
+                        "title": "Deterministic A",
+                        "source": "History",
+                        "scrape_policy": SCRAPE_POLICY_FULL,
+                        "published_at": "2026-01-20T00:00:00Z",
+                        "discovered_at": self._iso_days_ago(1),
+                    },
+                    {
+                        "url": replacement_b,
+                        "title": "Deterministic B",
+                        "source": "History",
+                        "scrape_policy": SCRAPE_POLICY_FULL,
+                        "published_at": "2026-01-19T00:00:00Z",
+                        "discovered_at": self._iso_days_ago(1),
+                    },
+                ],
+            )
+            self._seed_history_scores(
+                root=root,
+                rows=[
+                    self._history_row(
+                        url=replacement_a,
+                        theme="AI",
+                        score=0.99,
+                        reason="deterministic replacement A",
+                        discovered_at=self._iso_days_ago(1),
+                    ),
+                    self._history_row(
+                        url=replacement_b,
+                        theme="AI",
+                        score=0.98,
+                        reason="deterministic replacement B",
+                        discovered_at=self._iso_days_ago(1),
+                    ),
+                ],
+            )
+            config = self._make_pipeline_config(
+                "AI",
+                selector_overrides={
+                    "target_count": 6,
+                    "lower_bound": 1,
+                    "upper_bound": 6,
+                    "replacement_worst_count": 2,
+                },
+            )
+            return self._run_selector(
+                root=root,
+                theme="AI",
+                rss_items=rss_items,
+                score_side_effect=self._score_candidates_by_url(score_by_url),
+                pipeline_config=config,
+            )
+
+        state_a = _run_once(self._make_temp_root())
+        state_b = _run_once(self._make_temp_root())
+
+        self.assertEqual(6, len(state_a["ranked_items"]))
+        self.assertEqual(6, len(state_b["ranked_items"]))
+        self.assertEqual(state_a["ranked_items"], state_b["ranked_items"])
+
+    def test_scores_are_persisted_each_run_with_metadata(self) -> None:
+        root = self._make_temp_root()
+        rss_items = self._make_rss_items(5)
+        config = self._make_pipeline_config(
+            "AI",
+            selector_overrides={
+                "target_count": 5,
+                "lower_bound": 1,
+                "upper_bound": 5,
+                "replacement_enabled": False,
+            },
+        )
+        final_state = self._run_selector(
+            root=root,
+            theme="AI",
+            rss_items=rss_items,
+            pipeline_config=config,
+        )
+        self.assertEqual(5, final_state["metrics"]["counters"]["phase2_selector_scores_persisted_count"])
+
+        import sqlite3
+
+        with sqlite3.connect(self._db_path(root).as_posix()) as connection:
+            count_row = connection.execute("SELECT COUNT(*) FROM rss_item_theme_scores").fetchone()
+            sample_row = connection.execute(
+                """
+                SELECT theme, score, reason, source, discovered_at, run_id, scored_at, model_name, prompt_version
+                FROM rss_item_theme_scores
+                LIMIT 1
+                """
+            ).fetchone()
+        self.assertEqual(5, int(count_row[0]) if count_row else 0)
+        self.assertIsNotNone(sample_row)
+        assert sample_row is not None
+        self.assertEqual("AI", str(sample_row[0]))
+        self.assertGreaterEqual(float(sample_row[1]), 0.0)
+        self.assertLessEqual(float(sample_row[1]), 1.0)
+        self.assertTrue(str(sample_row[2]))
+        self.assertTrue(str(sample_row[3]))
+        self.assertTrue(str(sample_row[4]))
+        self.assertTrue(str(sample_row[5]))
+        self.assertTrue(str(sample_row[6]))
+        self.assertTrue(str(sample_row[7]))
+        self.assertTrue(str(sample_row[8]))
+
+    def test_phase2_artifact_contains_replacement_block_and_metrics(self) -> None:
+        root = self._make_temp_root()
+        rss_items = self._make_rss_items(5)
+        config = self._make_pipeline_config(
+            "AI",
+            selector_overrides={"target_count": 5, "lower_bound": 1, "upper_bound": 5},
+        )
+        final_state = self._run_selector(
+            root=root,
+            theme="AI",
+            rss_items=rss_items,
+            pipeline_config=config,
+        )
+        artifact = json.loads((root / "outputs" / "theme_selected_urls.json").read_text(encoding="utf-8"))
+        self.assertIn("replacement", artifact)
+        replacement = artifact["replacement"]
+        for key in (
+            "enabled",
+            "worst_count",
+            "tol",
+            "freshness_days",
+            "attempted_count",
+            "applied_count",
+            "db_pool_count",
+            "replaced_urls",
+        ):
+            self.assertIn(key, replacement)
+
+        counters = final_state["metrics"]["counters"]
+        self.assertIn("phase2_selector_replacement_attempted_count", counters)
+        self.assertIn("phase2_selector_replacement_applied_count", counters)
+        self.assertIn("phase2_selector_replacement_db_pool_count", counters)
+        self.assertIn("phase2_selector_scores_persisted_count", counters)
+
+        flags = final_state["metrics"]["flags"]
+        self.assertIn("phase2_selector_replacement_enabled", flags)
+        self.assertIn("phase2_selector_replacement_used", flags)
+        self.assertIn("phase2_selector_replacement_tol", flags)
+        self.assertEqual("max_per_url_theme", flags["phase2_selector_replacement_semantics"])
 
 
 if __name__ == "__main__":

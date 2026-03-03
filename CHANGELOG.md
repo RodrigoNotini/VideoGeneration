@@ -1,4 +1,77 @@
 # CHANGELOG
+## 0.2.7 - Phase 2 Historical Replacement Mechanism (Worst-10 Swap)
+### What Changed
+- Added new Phase 2 historical score persistence architecture in `core/persistence/db.py`:
+  - New table: `rss_item_theme_scores`
+  - New indexes:
+    - `(theme, score DESC)`
+    - `(theme, url)`
+    - `(scored_at DESC)`
+  - New persistence helpers:
+    - `insert_theme_scores(...)`
+    - `fetch_replacement_candidates(...)`
+- Extended strict pipeline config validation in `core/config/config_loader.py` and `configs/pipeline.yaml`:
+  - `phase2_selector.replacement_enabled` (bool)
+  - `phase2_selector.replacement_worst_count` (int >= 1)
+  - `phase2_selector.replacement_score_tol` (float in [0, 1])
+  - `phase2_selector.replacement_freshness_days` (int >= 1)
+  - `phase2_selector.replacement_history_semantics` (`max_per_url_theme`)
+- Updated Phase 2 runtime in `agents/theme_url_selector.py`:
+  - Persist all current-run candidate scores to `rss_item_theme_scores`.
+  - Select worst scored selected items deterministically.
+  - Query replacement pool from history with constraints:
+    - same theme only
+    - score threshold (`>= tol`)
+    - freshness window (default 7 days on `discovered_at`)
+    - exclude URLs already selected
+    - max score per `(theme, url)` semantics
+  - Apply deterministic one-to-one replacements for better historical candidates only.
+  - Keep output cardinality unchanged.
+  - Preserve replacement item `scrape_policy` from `rss_items` metadata join.
+- Added Phase 2 observability extensions:
+  - Metrics counters:
+    - `phase2_selector_replacement_attempted_count`
+    - `phase2_selector_replacement_applied_count`
+    - `phase2_selector_replacement_db_pool_count`
+    - `phase2_selector_scores_persisted_count`
+  - Metrics flags:
+    - `phase2_selector_replacement_enabled`
+    - `phase2_selector_replacement_used`
+    - `phase2_selector_replacement_tol`
+    - `phase2_selector_replacement_semantics`
+  - Runtime log summary:
+    - `PHASE2_REPLACEMENT_SUMMARY ...`
+  - Artifact extension (`outputs/theme_selected_urls.json`):
+    - additive `replacement` block with attempted/applied/pool details.
+- Added/updated tests:
+  - `tests/test_phase2_theme_selector.py`:
+    - replacement application, theme filtering, selected URL exclusion, tolerance/freshness gates
+    - max-per-url-theme semantics
+    - partial/no-op paths
+    - deterministic replacement behavior and cardinality invariants
+    - score persistence metadata checks
+    - replacement artifact and metrics checks
+  - `tests/test_source_policy_contract.py`:
+    - replacement path preserves `scrape_policy` from DB metadata.
+  - Existing retry-path assertions extended to ensure replacement metrics integration remains present.
+
+### Why
+- Improve Phase 2 quality without changing Phase 1 discovery volume by allowing post-selection upgrade from recent high-scoring historical candidates.
+- Preserve deterministic and auditable behavior for replacements via explicit semantics, tie-breakers, metrics, and artifact fields.
+- Keep source-policy contract consistent when replacement candidates are sourced from historical data.
+
+### Expected Impact
+- Phase 2 can replace low-score selected URLs with better recent same-theme historical URLs when available.
+- Runs with empty/insufficient history remain safe no-ops (no cardinality change, no duplicate URLs).
+- Historical score corpus grows over time, enabling stronger replacement pools in future runs.
+- Downstream phases continue receiving `scrape_policy` in selected items.
+
+### Validation Method
+- Executed:
+  - `python -m unittest tests.test_phase2_theme_selector tests.test_source_policy_contract tests.test_model_retry`
+- Result:
+  - `OK` (40 tests, 0 failures, 0 errors)
+
 ## 0.2.6 - Source Access Policy Architecture (full_scrape_allowed vs metadata_only)
 ### What Changed
 - Introduced a deterministic source access policy contract with shared runtime constants:

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import sqlite3
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +53,28 @@ SCHEMA_STATEMENTS: tuple[str, ...] = (
     "CREATE INDEX IF NOT EXISTS idx_rss_items_discovered_at ON rss_items(discovered_at)",
     "CREATE INDEX IF NOT EXISTS idx_runs_phase ON runs(phase_name)",
     "CREATE INDEX IF NOT EXISTS idx_artifacts_run_id ON artifacts(run_id)",
+    """
+    CREATE TABLE IF NOT EXISTS rss_item_theme_scores (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        url TEXT NOT NULL,
+        theme TEXT NOT NULL,
+        score REAL NOT NULL,
+        reason TEXT NOT NULL,
+        source TEXT NOT NULL,
+        published_at TEXT,
+        discovered_at TEXT NOT NULL,
+        run_id TEXT NOT NULL,
+        scored_at TEXT NOT NULL,
+        model_name TEXT NOT NULL,
+        prompt_version TEXT NOT NULL
+    )
+    """,
+    "CREATE INDEX IF NOT EXISTS idx_rss_item_theme_scores_theme_score "
+    "ON rss_item_theme_scores(theme, score DESC)",
+    "CREATE INDEX IF NOT EXISTS idx_rss_item_theme_scores_theme_url "
+    "ON rss_item_theme_scores(theme, url)",
+    "CREATE INDEX IF NOT EXISTS idx_rss_item_theme_scores_scored_at "
+    "ON rss_item_theme_scores(scored_at DESC)",
 )
 
 
@@ -264,3 +287,205 @@ def fetch_rss_item_scrape_policy_by_url(connection: sqlite3.Connection, url: str
     if not row:
         return None
     return resolve_scrape_policy(row[0], fallback_to_full=True)
+
+
+def _now_utc_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
+
+
+def _freshness_cutoff_iso(*, freshness_days: int, now_iso: str | None = None) -> str:
+    now_value = now_iso or _now_utc_iso()
+    normalized = now_value.replace("Z", "+00:00")
+    now_dt = datetime.fromisoformat(normalized)
+    if now_dt.tzinfo is None:
+        now_dt = now_dt.replace(tzinfo=timezone.utc)
+    return (now_dt.astimezone(timezone.utc) - timedelta(days=freshness_days)).replace(microsecond=0).isoformat().replace(
+        "+00:00",
+        "Z",
+    )
+
+
+def insert_theme_scores(connection: sqlite3.Connection, rows: list[dict[str, Any]]) -> int:
+    """Insert Phase 2 score history rows and return inserted row count."""
+    if not rows:
+        return 0
+
+    values: list[tuple[Any, ...]] = []
+    for row in rows:
+        url = str(row.get("url", "")).strip()
+        theme = str(row.get("theme", "")).strip()
+        reason = str(row.get("reason", "")).strip()
+        source = str(row.get("source", "")).strip()
+        published_at = str(row.get("published_at", "")).strip()
+        discovered_at = str(row.get("discovered_at", "")).strip()
+        run_id = str(row.get("run_id", "")).strip()
+        scored_at = str(row.get("scored_at", "")).strip()
+        model_name = str(row.get("model_name", "")).strip()
+        prompt_version = str(row.get("prompt_version", "")).strip()
+        try:
+            score = float(row.get("score", 0.0))
+        except (TypeError, ValueError) as error:
+            raise ValueError("Theme score row contains non-numeric score.") from error
+        if score < 0.0 or score > 1.0:
+            raise ValueError("Theme score row score must be in [0, 1].")
+        if not all((url, theme, reason, source, discovered_at, run_id, scored_at, model_name, prompt_version)):
+            raise ValueError("Theme score row is missing required fields.")
+        values.append(
+            (
+                url,
+                theme,
+                round(score, 6),
+                reason,
+                source,
+                published_at,
+                discovered_at,
+                run_id,
+                scored_at,
+                model_name,
+                prompt_version,
+            )
+        )
+
+    before_changes = connection.total_changes
+    with connection:
+        connection.executemany(
+            """
+            INSERT INTO rss_item_theme_scores (
+                url,
+                theme,
+                score,
+                reason,
+                source,
+                published_at,
+                discovered_at,
+                run_id,
+                scored_at,
+                model_name,
+                prompt_version
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            values,
+        )
+    return connection.total_changes - before_changes
+
+
+def fetch_replacement_candidates(
+    connection: sqlite3.Connection,
+    *,
+    theme: str,
+    min_score: float,
+    freshness_days: int,
+    excluded_urls: list[str],
+    limit: int,
+    now_iso: str | None = None,
+) -> list[dict[str, Any]]:
+    """
+    Fetch replacement pool using same-theme, freshness, and score constraints.
+
+    Semantics are max score per (theme, url), with deterministic ordering:
+    score DESC, published_at DESC, url ASC.
+    """
+    if limit < 1:
+        return []
+
+    cutoff_discovered_at = _freshness_cutoff_iso(freshness_days=freshness_days, now_iso=now_iso)
+    unique_excluded = sorted(
+        {
+            str(url).strip()
+            for url in excluded_urls
+            if str(url).strip()
+        }
+    )
+
+    params: list[Any] = [theme, float(min_score), cutoff_discovered_at]
+    exclusion_sql = ""
+    if unique_excluded:
+        placeholders = ", ".join("?" for _ in unique_excluded)
+        exclusion_sql = f"AND scores.url NOT IN ({placeholders})"
+        params.extend(unique_excluded)
+    params.append(limit)
+
+    rows = connection.execute(
+        f"""
+        WITH eligible AS (
+            SELECT
+                scores.url AS url,
+                scores.theme AS theme,
+                scores.score AS score,
+                TRIM(COALESCE(scores.reason, '')) AS reason,
+                COALESCE(NULLIF(metadata.source, ''), scores.source, '') AS source,
+                metadata.title AS title,
+                metadata.scrape_policy AS scrape_policy,
+                COALESCE(NULLIF(metadata.published_at, ''), COALESCE(scores.published_at, '')) AS published_at,
+                scores.discovered_at AS discovered_at,
+                scores.scored_at AS scored_at
+            FROM rss_item_theme_scores AS scores
+            INNER JOIN rss_items AS metadata
+                ON metadata.url = scores.url
+            WHERE
+                scores.theme = ?
+                AND scores.score >= ?
+                AND scores.discovered_at >= ?
+                {exclusion_sql}
+        ),
+        ranked AS (
+            SELECT
+                url,
+                theme,
+                score,
+                reason,
+                source,
+                title,
+                scrape_policy,
+                published_at,
+                discovered_at,
+                scored_at,
+                ROW_NUMBER() OVER (
+                    PARTITION BY theme, url
+                    ORDER BY
+                        score DESC,
+                        CASE WHEN COALESCE(published_at, '') = '' THEN 1 ELSE 0 END ASC,
+                        published_at DESC,
+                        url ASC,
+                        scored_at DESC
+                ) AS row_number_per_url
+            FROM eligible
+        )
+        SELECT
+            url,
+            theme,
+            score,
+            reason,
+            source,
+            title,
+            scrape_policy,
+            COALESCE(published_at, '') AS published_at,
+            discovered_at,
+            scored_at
+        FROM ranked
+        WHERE row_number_per_url = 1
+        ORDER BY
+            score DESC,
+            CASE WHEN COALESCE(published_at, '') = '' THEN 1 ELSE 0 END ASC,
+            published_at DESC,
+            url ASC
+        LIMIT ?
+        """,
+        params,
+    ).fetchall()
+
+    return [
+        {
+            "url": str(row[0]),
+            "theme": str(row[1]),
+            "score": float(row[2]),
+            "reason": str(row[3]),
+            "source": str(row[4]),
+            "title": str(row[5]),
+            "scrape_policy": resolve_scrape_policy(row[6], fallback_to_full=True),
+            "published_at": str(row[7]),
+            "discovered_at": str(row[8]),
+            "scored_at": str(row[9]),
+        }
+        for row in rows
+    ]

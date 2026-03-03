@@ -16,6 +16,11 @@ phase2_selector:
   lower_bound: 25
   upper_bound: 35
   tie_break_policy: "published_at_desc_then_canonical_url_asc"
+  replacement_enabled: true
+  replacement_worst_count: 10
+  replacement_score_tol: 0.55
+  replacement_freshness_days: 7
+  replacement_history_semantics: "max_per_url_theme"
   deterministic:
     temperature: 0.0
     top_p: 1.0

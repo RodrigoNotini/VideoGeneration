@@ -170,6 +170,11 @@ def _validate_pipeline_config(config: dict[str, Any]) -> None:
             "lower_bound",
             "upper_bound",
             "tie_break_policy",
+            "replacement_enabled",
+            "replacement_worst_count",
+            "replacement_score_tol",
+            "replacement_freshness_days",
+            "replacement_history_semantics",
             "deterministic",
         ),
         "configs/pipeline.yaml phase2_selector",
@@ -180,6 +185,39 @@ def _validate_pipeline_config(config: dict[str, Any]) -> None:
     for key in ("target_count", "lower_bound", "upper_bound"):
         if not isinstance(selector[key], int) or selector[key] < 1:
             raise ConfigError(f"configs/pipeline.yaml phase2_selector.{key} must be an integer >= 1")
+    if not isinstance(selector["replacement_enabled"], bool):
+        raise ConfigError("configs/pipeline.yaml phase2_selector.replacement_enabled must be a boolean")
+    if not isinstance(selector["replacement_worst_count"], int) or selector["replacement_worst_count"] < 1:
+        raise ConfigError(
+            "configs/pipeline.yaml phase2_selector.replacement_worst_count must be an integer >= 1"
+        )
+    replacement_score_tol = selector["replacement_score_tol"]
+    if not isinstance(replacement_score_tol, (int, float)):
+        raise ConfigError("configs/pipeline.yaml phase2_selector.replacement_score_tol must be numeric")
+    if not math.isfinite(float(replacement_score_tol)):
+        raise ConfigError("configs/pipeline.yaml phase2_selector.replacement_score_tol must be finite")
+    if float(replacement_score_tol) < 0 or float(replacement_score_tol) > 1:
+        raise ConfigError("configs/pipeline.yaml phase2_selector.replacement_score_tol must be in [0, 1]")
+    if (
+        not isinstance(selector["replacement_freshness_days"], int)
+        or selector["replacement_freshness_days"] < 1
+    ):
+        raise ConfigError(
+            "configs/pipeline.yaml phase2_selector.replacement_freshness_days must be an integer >= 1"
+        )
+    if (
+        not isinstance(selector["replacement_history_semantics"], str)
+        or not selector["replacement_history_semantics"].strip()
+    ):
+        raise ConfigError(
+            "configs/pipeline.yaml phase2_selector.replacement_history_semantics must be a non-empty string"
+        )
+    allowed_replacement_semantics = {"max_per_url_theme"}
+    if selector["replacement_history_semantics"] not in allowed_replacement_semantics:
+        raise ConfigError(
+            "configs/pipeline.yaml phase2_selector.replacement_history_semantics must be one of: "
+            + ", ".join(sorted(allowed_replacement_semantics))
+        )
     if selector["lower_bound"] > selector["upper_bound"]:
         raise ConfigError("configs/pipeline.yaml phase2_selector.lower_bound must be <= upper_bound")
     if selector["target_count"] < selector["lower_bound"] or selector["target_count"] > selector["upper_bound"]:

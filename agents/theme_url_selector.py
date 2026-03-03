@@ -14,8 +14,18 @@ from typing import Any
 from dotenv import load_dotenv
 
 from core.model_retry import score_with_retry_and_fallback
-from core.common.utils import is_runtime_verbose_logging_enabled, resolve_scrape_policy, write_json
+from core.common.utils import (
+    is_runtime_verbose_logging_enabled,
+    resolve_scrape_policy,
+    sha256_text,
+    write_json,
+)
 from core.config.config_loader import load_all_configs
+from core.persistence.db import (
+    fetch_replacement_candidates,
+    initialize_database,
+    insert_theme_scores,
+)
 from core.state import PipelineState, copy_state
 
 
@@ -34,6 +44,12 @@ DEFAULT_PROMPT_VERSION = "phase2-theme-selector-v1"
 OPENAI_TIMEOUT_SECONDS = 30.0
 TIE_BREAK_POLICY = "published_at_desc_then_canonical_url_asc"
 SUPPORTED_TIE_BREAK_POLICIES = {TIE_BREAK_POLICY}
+DEFAULT_REPLACEMENT_ENABLED = True
+DEFAULT_REPLACEMENT_WORST_COUNT = 10
+DEFAULT_REPLACEMENT_SCORE_TOL = 0.55
+DEFAULT_REPLACEMENT_FRESHNESS_DAYS = 7
+DEFAULT_REPLACEMENT_HISTORY_SEMANTICS = "max_per_url_theme"
+SUPPORTED_REPLACEMENT_HISTORY_SEMANTICS = {DEFAULT_REPLACEMENT_HISTORY_SEMANTICS}
 
 THEME_KEYWORDS: dict[str, tuple[str, ...]] = {
     "AI": (
@@ -93,6 +109,7 @@ class Candidate:
     scrape_policy: str
     published_at: str
     summary: str
+    discovered_at: str
 
 
 @dataclass(frozen=True)
@@ -104,6 +121,10 @@ class ScoredCandidate:
 
 def _project_root() -> Path:
     return Path(__file__).resolve().parent.parent
+
+
+def _now_utc_iso() -> str:
+    return datetime.now(timezone.utc).replace(microsecond=0).isoformat().replace("+00:00", "Z")
 
 
 def _phase2_error(*, code: str, message: str, details: dict[str, Any] | None = None) -> str:
@@ -178,6 +199,15 @@ def _selector_settings(pipeline_config: dict[str, Any], openai_config: dict[str,
         upper_bound = int(selector_cfg.get("upper_bound", DEFAULT_UPPER_BOUND))
         temperature = float(deterministic_cfg.get("temperature", DEFAULT_TEMPERATURE))
         top_p = float(deterministic_cfg.get("top_p", DEFAULT_TOP_P))
+        replacement_worst_count = int(
+            selector_cfg.get("replacement_worst_count", DEFAULT_REPLACEMENT_WORST_COUNT)
+        )
+        replacement_score_tol = float(
+            selector_cfg.get("replacement_score_tol", DEFAULT_REPLACEMENT_SCORE_TOL)
+        )
+        replacement_freshness_days = int(
+            selector_cfg.get("replacement_freshness_days", DEFAULT_REPLACEMENT_FRESHNESS_DAYS)
+        )
     except (TypeError, ValueError) as error:
         raise ThemeURLSelectorError(
             _phase2_error(
@@ -187,6 +217,10 @@ def _selector_settings(pipeline_config: dict[str, Any], openai_config: dict[str,
             )
         ) from error
     tie_break_policy = str(selector_cfg.get("tie_break_policy") or TIE_BREAK_POLICY).strip()
+    replacement_enabled = selector_cfg.get("replacement_enabled", DEFAULT_REPLACEMENT_ENABLED)
+    replacement_history_semantics = str(
+        selector_cfg.get("replacement_history_semantics", DEFAULT_REPLACEMENT_HISTORY_SEMANTICS)
+    ).strip()
 
     if not model_name:
         raise ThemeURLSelectorError(
@@ -246,6 +280,55 @@ def _selector_settings(pipeline_config: dict[str, Any], openai_config: dict[str,
                 details={"top_p": top_p},
             )
         )
+    if not isinstance(replacement_enabled, bool):
+        raise ThemeURLSelectorError(
+            _phase2_error(
+                code="invalid_selector_config",
+                message="Selector replacement_enabled must be a boolean.",
+                details={"replacement_enabled": replacement_enabled},
+            )
+        )
+    if replacement_worst_count < 1:
+        raise ThemeURLSelectorError(
+            _phase2_error(
+                code="invalid_selector_config",
+                message="Selector replacement_worst_count must be >= 1.",
+                details={"replacement_worst_count": replacement_worst_count},
+            )
+        )
+    if (
+        not math.isfinite(replacement_score_tol)
+        or replacement_score_tol < 0.0
+        or replacement_score_tol > 1.0
+    ):
+        raise ThemeURLSelectorError(
+            _phase2_error(
+                code="invalid_selector_config",
+                message="Selector replacement_score_tol must be in [0, 1].",
+                details={"replacement_score_tol": replacement_score_tol},
+            )
+        )
+    if replacement_freshness_days < 1:
+        raise ThemeURLSelectorError(
+            _phase2_error(
+                code="invalid_selector_config",
+                message="Selector replacement_freshness_days must be >= 1.",
+                details={"replacement_freshness_days": replacement_freshness_days},
+            )
+        )
+    if replacement_history_semantics not in SUPPORTED_REPLACEMENT_HISTORY_SEMANTICS:
+        raise ThemeURLSelectorError(
+            _phase2_error(
+                code="invalid_selector_config",
+                message="Unsupported replacement history semantics.",
+                details={
+                    "replacement_history_semantics": replacement_history_semantics,
+                    "supported_replacement_history_semantics": sorted(
+                        SUPPORTED_REPLACEMENT_HISTORY_SEMANTICS
+                    ),
+                },
+            )
+        )
     if tie_break_policy not in SUPPORTED_TIE_BREAK_POLICIES:
         raise ThemeURLSelectorError(
             _phase2_error(
@@ -267,6 +350,11 @@ def _selector_settings(pipeline_config: dict[str, Any], openai_config: dict[str,
         "temperature": temperature,
         "top_p": top_p,
         "tie_break_policy": tie_break_policy,
+        "replacement_enabled": replacement_enabled,
+        "replacement_worst_count": replacement_worst_count,
+        "replacement_score_tol": round(replacement_score_tol, 6),
+        "replacement_freshness_days": replacement_freshness_days,
+        "replacement_history_semantics": replacement_history_semantics,
     }
 
 
@@ -285,6 +373,7 @@ def _normalize_candidates(items: list[dict[str, Any]]) -> tuple[list[Candidate],
         scrape_policy = resolve_scrape_policy(item.get("scrape_policy"), fallback_to_full=True)
         published_at = str(item.get("published_at", "")).strip()
         summary = str(item.get("summary", "")).strip()
+        discovered_at = str(item.get("discovered_at", "")).strip()
         candidates.append(
             Candidate(
                 item_id=len(candidates) + 1,
@@ -295,6 +384,7 @@ def _normalize_candidates(items: list[dict[str, Any]]) -> tuple[list[Candidate],
                 scrape_policy=scrape_policy,
                 published_at=published_at,
                 summary=summary,
+                discovered_at=discovered_at,
             )
         )
 
@@ -542,6 +632,27 @@ def _published_sort_parts(published_at: str) -> tuple[int, float]:
     return (0, -timestamp)
 
 
+def _scored_candidate_order_key(item: ScoredCandidate) -> tuple[float, tuple[int, float], str]:
+    return (
+        -item.score,
+        _published_sort_parts(item.candidate.published_at),
+        item.candidate.canonical_url,
+    )
+
+
+def _published_worst_sort_parts(published_at: str) -> tuple[int, float]:
+    value = published_at.strip()
+    if not value:
+        return (1, 0.0)
+    try:
+        parsed = datetime.fromisoformat(value.replace("Z", "+00:00"))
+    except ValueError:
+        return (1, 0.0)
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return (0, parsed.astimezone(timezone.utc).timestamp())
+
+
 def _sort_scored_candidates(
     scored: list[ScoredCandidate], tie_break_policy: str, *, verbose_runtime_logs: bool
 ) -> tuple[list[ScoredCandidate], int]:
@@ -566,10 +677,7 @@ def _sort_scored_candidates(
                 _item.candidate.canonical_url
                 for _item in sorted(
                     tie_group,
-                    key=lambda value: (
-                        _published_sort_parts(value.candidate.published_at),
-                        value.candidate.canonical_url,
-                    ),
+                    key=lambda value: _scored_candidate_order_key(value)[1:],
                 )
             ]
             logger.debug(
@@ -578,14 +686,7 @@ def _sort_scored_candidates(
                 ordered_urls,
             )
 
-    ordered = sorted(
-        scored,
-        key=lambda item: (
-            -item.score,
-            _published_sort_parts(item.candidate.published_at),
-            item.candidate.canonical_url,
-        ),
-    )
+    ordered = sorted(scored, key=_scored_candidate_order_key)
     return ordered, tie_break_events
 
 
@@ -612,6 +713,146 @@ def _build_selected_items(scored_items: list[ScoredCandidate], output_count: int
             }
         )
     return selected
+
+
+def _build_score_history_rows(
+    *,
+    scored_candidates: list[ScoredCandidate],
+    theme: str,
+    run_id: str,
+    scored_at: str,
+    model_name: str,
+    prompt_version: str,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    for item in scored_candidates:
+        discovered_at = item.candidate.discovered_at or scored_at
+        rows.append(
+            {
+                "url": item.candidate.url,
+                "theme": theme,
+                "score": round(item.score, 6),
+                "reason": item.reason.strip()[:140] or "No reason provided.",
+                "source": item.candidate.source or "unknown_source",
+                "published_at": item.candidate.published_at,
+                "discovered_at": discovered_at,
+                "run_id": run_id,
+                "scored_at": scored_at,
+                "model_name": model_name,
+                "prompt_version": prompt_version,
+            }
+        )
+    return rows
+
+
+def _phase2_run_id(
+    *,
+    theme: str,
+    scored_at: str,
+    model_name: str,
+    prompt_version: str,
+    candidates: list[Candidate],
+) -> str:
+    identity = "|".join(
+        (
+            theme,
+            scored_at,
+            model_name,
+            prompt_version,
+            str(len(candidates)),
+            ",".join(candidate.url for candidate in candidates[:10]),
+        )
+    )
+    return "phase2_" + sha256_text(identity)[:16]
+
+
+def _worst_selected_indexes(selected_scored: list[ScoredCandidate], worst_count: int) -> list[int]:
+    indexed_items = list(enumerate(selected_scored))
+    ordered_worst = sorted(
+        indexed_items,
+        key=lambda entry: (
+            entry[1].score,
+            _published_worst_sort_parts(entry[1].candidate.published_at),
+            entry[1].candidate.canonical_url,
+        ),
+    )
+    return [index for index, _item in ordered_worst[: max(worst_count, 0)]]
+
+
+def _replacement_candidate_to_scored_candidate(
+    replacement: dict[str, Any],
+    *,
+    item_id: int,
+) -> ScoredCandidate:
+    reason = str(replacement.get("reason", "")).strip()
+    replacement_reason = (
+        f"Historical replacement: {reason}"
+        if reason
+        else "Historical replacement: selected from score history."
+    )
+    candidate = Candidate(
+        item_id=item_id,
+        url=str(replacement.get("url", "")).strip(),
+        canonical_url=str(replacement.get("url", "")).strip(),
+        title=str(replacement.get("title", "")).strip(),
+        source=str(replacement.get("source", "")).strip(),
+        scrape_policy=resolve_scrape_policy(replacement.get("scrape_policy"), fallback_to_full=True),
+        published_at=str(replacement.get("published_at", "")).strip(),
+        summary="",
+        discovered_at=str(replacement.get("discovered_at", "")).strip(),
+    )
+    return ScoredCandidate(
+        candidate=candidate,
+        score=round(float(replacement.get("score", 0.0)), 6),
+        reason=replacement_reason[:140],
+    )
+
+
+def _apply_replacements(
+    *,
+    selected_scored: list[ScoredCandidate],
+    replacement_pool: list[dict[str, Any]],
+    worst_count: int,
+) -> tuple[list[ScoredCandidate], list[dict[str, str]], int]:
+    attempted_count = min(max(worst_count, 0), len(selected_scored))
+    if attempted_count == 0 or not replacement_pool:
+        return list(selected_scored), [], attempted_count
+
+    updated = list(selected_scored)
+    replacement_pairs: list[dict[str, str]] = []
+    worst_indexes = _worst_selected_indexes(updated, attempted_count)
+    current_urls = {item.candidate.url for item in updated}
+
+    for index, target_idx in enumerate(worst_indexes):
+        if index >= len(replacement_pool):
+            break
+        replacement_raw = replacement_pool[index]
+        target_item = updated[target_idx]
+        try:
+            replacement_score = float(replacement_raw.get("score", 0.0))
+        except (TypeError, ValueError):
+            continue
+        if replacement_score <= target_item.score:
+            continue
+        current_urls.discard(target_item.candidate.url)
+        replacement_url = str(replacement_raw.get("url", "")).strip()
+        if not replacement_url or replacement_url in current_urls:
+            current_urls.add(target_item.candidate.url)
+            continue
+        replacement_item = _replacement_candidate_to_scored_candidate(
+            replacement_raw,
+            item_id=target_item.candidate.item_id,
+        )
+        updated[target_idx] = replacement_item
+        current_urls.add(replacement_item.candidate.url)
+        replacement_pairs.append(
+            {
+                "from": target_item.candidate.url,
+                "to": replacement_item.candidate.url,
+            }
+        )
+
+    return sorted(updated, key=_scored_candidate_order_key), replacement_pairs, attempted_count
 
 
 def run(state: PipelineState) -> PipelineState:
@@ -670,7 +911,79 @@ def run(state: PipelineState) -> PipelineState:
         lower_bound=settings["lower_bound"],
         upper_bound=settings["upper_bound"],
     )
-    selected_items = _build_selected_items(ordered_scored, output_count)
+    selected_scored = list(ordered_scored[:output_count])
+
+    scored_at = _now_utc_iso()
+    run_id = _phase2_run_id(
+        theme=theme,
+        scored_at=scored_at,
+        model_name=settings["model_name"],
+        prompt_version=settings["prompt_version"],
+        candidates=candidates,
+    )
+    score_history_rows = _build_score_history_rows(
+        scored_candidates=scored_candidates,
+        theme=theme,
+        run_id=run_id,
+        scored_at=scored_at,
+        model_name=settings["model_name"],
+        prompt_version=settings["prompt_version"],
+    )
+
+    scores_persisted_count = 0
+    replacement_attempted_count = 0
+    replacement_applied_count = 0
+    replacement_db_pool_count = 0
+    replacement_pairs: list[dict[str, str]] = []
+    replacement_enabled = bool(settings["replacement_enabled"])
+    replacement_tol = float(settings["replacement_score_tol"])
+    replacement_freshness_days = int(settings["replacement_freshness_days"])
+    replacement_worst_count = int(settings["replacement_worst_count"])
+    replacement_history_semantics = str(settings["replacement_history_semantics"])
+
+    db_connection = None
+    db_path = _project_root() / str(pipeline_config.get("database_path", "data/db/app.sqlite"))
+    try:
+        db_connection = initialize_database(db_path)
+        scores_persisted_count = insert_theme_scores(db_connection, score_history_rows)
+
+        if replacement_enabled:
+            replacement_attempted_count = min(replacement_worst_count, len(selected_scored))
+            selected_urls = [item.candidate.url for item in selected_scored]
+            replacement_pool = fetch_replacement_candidates(
+                db_connection,
+                theme=theme,
+                min_score=replacement_tol,
+                freshness_days=replacement_freshness_days,
+                excluded_urls=selected_urls,
+                limit=replacement_attempted_count,
+                now_iso=scored_at,
+            )
+            replacement_db_pool_count = len(replacement_pool)
+            selected_scored, replacement_pairs, replacement_attempted_count = _apply_replacements(
+                selected_scored=selected_scored,
+                replacement_pool=replacement_pool,
+                worst_count=replacement_worst_count,
+            )
+            replacement_applied_count = len(replacement_pairs)
+    except ThemeURLSelectorError:
+        raise
+    except Exception as error:
+        raise ThemeURLSelectorError(
+            _phase2_error(
+                code="phase2_history_query_error",
+                message="Phase 2 failed while persisting scores or querying replacements.",
+                details={
+                    "error_type": error.__class__.__name__,
+                    "error": str(error),
+                },
+            )
+        ) from error
+    finally:
+        if db_connection is not None:
+            db_connection.close()
+
+    selected_items = _build_selected_items(selected_scored, output_count)
 
     next_state["ranked_items"] = selected_items
 
@@ -686,12 +999,28 @@ def run(state: PipelineState) -> PipelineState:
         scoring_metadata["token_usage"]["completion_tokens"]
     )
     counters["phase2_selector_total_tokens"] = int(scoring_metadata["token_usage"]["total_tokens"])
+    counters["phase2_selector_replacement_attempted_count"] = replacement_attempted_count
+    counters["phase2_selector_replacement_applied_count"] = replacement_applied_count
+    counters["phase2_selector_replacement_db_pool_count"] = replacement_db_pool_count
+    counters["phase2_selector_scores_persisted_count"] = scores_persisted_count
 
     flags = next_state["metrics"]["flags"]
     flags["phase2_selector_theme"] = theme
     flags["phase2_selector_policy_warning_low_input"] = policy_warning
     flags["phase2_selector_fallback_used"] = bool(scoring_metadata["fallback_used"])
     flags["phase2_selector_tie_break_policy"] = settings["tie_break_policy"]
+    flags["phase2_selector_replacement_enabled"] = replacement_enabled
+    flags["phase2_selector_replacement_used"] = replacement_applied_count > 0
+    flags["phase2_selector_replacement_tol"] = replacement_tol
+    flags["phase2_selector_replacement_semantics"] = replacement_history_semantics
+    logger.info(
+        "PHASE2_REPLACEMENT_SUMMARY theme=%s tol=%s attempted=%s applied=%s pool=%s",
+        theme,
+        replacement_tol,
+        replacement_attempted_count,
+        replacement_applied_count,
+        replacement_db_pool_count,
+    )
     logger.info(
         "PHASE2_SELECTOR_SUMMARY theme=%s input=%s output=%s retries=%s fallback=%s tie_break_events=%s latency_ms=%s",
         theme,
@@ -719,6 +1048,16 @@ def run(state: PipelineState) -> PipelineState:
                 "prompt_version": settings["prompt_version"],
             },
             "tie_break_policy": settings["tie_break_policy"],
+            "replacement": {
+                "enabled": replacement_enabled,
+                "worst_count": replacement_worst_count,
+                "tol": replacement_tol,
+                "freshness_days": replacement_freshness_days,
+                "attempted_count": replacement_attempted_count,
+                "applied_count": replacement_applied_count,
+                "db_pool_count": replacement_db_pool_count,
+                "replaced_urls": replacement_pairs,
+            },
             "run_metadata": {
                 "phase": 2,
                 "retry_count": int(scoring_metadata["retry_count"]),
@@ -726,6 +1065,8 @@ def run(state: PipelineState) -> PipelineState:
                 "invalid_item_count": invalid_item_count,
                 "model_latency_ms": int(scoring_metadata["model_latency_ms"]),
                 "token_usage": scoring_metadata["token_usage"],
+                "scores_persisted_count": scores_persisted_count,
+                "replacement_semantics": replacement_history_semantics,
             },
         },
     )

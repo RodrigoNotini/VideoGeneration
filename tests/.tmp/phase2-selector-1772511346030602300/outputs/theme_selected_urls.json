@@ -1,0 +1,308 @@
+{
+  "input_count": 50,
+  "output_count": 30,
+  "replacement": {
+    "applied_count": 0,
+    "attempted_count": 10,
+    "db_pool_count": 0,
+    "enabled": true,
+    "freshness_days": 7,
+    "replaced_urls": [],
+    "tol": 0.55,
+    "worst_count": 10
+  },
+  "run_metadata": {
+    "fallback_used": false,
+    "invalid_item_count": 0,
+    "model_latency_ms": 5,
+    "phase": 2,
+    "replacement_semantics": "max_per_url_theme",
+    "retry_count": 0,
+    "scores_persisted_count": 50,
+    "token_usage": {
+      "completion_tokens": 20,
+      "prompt_tokens": 10,
+      "total_tokens": 30
+    }
+  },
+  "selected_items": [
+    {
+      "published_at": "2026-01-01T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.999,
+      "title": "Story 000",
+      "url": "https://example.com/story-000"
+    },
+    {
+      "published_at": "2026-01-02T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.998,
+      "title": "Story 001",
+      "url": "https://example.com/story-001"
+    },
+    {
+      "published_at": "2026-01-03T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.997,
+      "title": "Story 002",
+      "url": "https://example.com/story-002"
+    },
+    {
+      "published_at": "2026-01-04T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.996,
+      "title": "Story 003",
+      "url": "https://example.com/story-003"
+    },
+    {
+      "published_at": "2026-01-05T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.995,
+      "title": "Story 004",
+      "url": "https://example.com/story-004"
+    },
+    {
+      "published_at": "2026-01-06T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.994,
+      "title": "Story 005",
+      "url": "https://example.com/story-005"
+    },
+    {
+      "published_at": "2026-01-07T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.993,
+      "title": "Story 006",
+      "url": "https://example.com/story-006"
+    },
+    {
+      "published_at": "2026-01-08T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.992,
+      "title": "Story 007",
+      "url": "https://example.com/story-007"
+    },
+    {
+      "published_at": "2026-01-09T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.991,
+      "title": "Story 008",
+      "url": "https://example.com/story-008"
+    },
+    {
+      "published_at": "2026-01-10T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.99,
+      "title": "Story 009",
+      "url": "https://example.com/story-009"
+    },
+    {
+      "published_at": "2026-01-11T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.989,
+      "title": "Story 010",
+      "url": "https://example.com/story-010"
+    },
+    {
+      "published_at": "2026-01-12T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.988,
+      "title": "Story 011",
+      "url": "https://example.com/story-011"
+    },
+    {
+      "published_at": "2026-01-13T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.987,
+      "title": "Story 012",
+      "url": "https://example.com/story-012"
+    },
+    {
+      "published_at": "2026-01-14T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.986,
+      "title": "Story 013",
+      "url": "https://example.com/story-013"
+    },
+    {
+      "published_at": "2026-01-15T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.985,
+      "title": "Story 014",
+      "url": "https://example.com/story-014"
+    },
+    {
+      "published_at": "2026-01-16T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.984,
+      "title": "Story 015",
+      "url": "https://example.com/story-015"
+    },
+    {
+      "published_at": "2026-01-17T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.983,
+      "title": "Story 016",
+      "url": "https://example.com/story-016"
+    },
+    {
+      "published_at": "2026-01-18T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.982,
+      "title": "Story 017",
+      "url": "https://example.com/story-017"
+    },
+    {
+      "published_at": "2026-01-19T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.981,
+      "title": "Story 018",
+      "url": "https://example.com/story-018"
+    },
+    {
+      "published_at": "2026-01-20T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.98,
+      "title": "Story 019",
+      "url": "https://example.com/story-019"
+    },
+    {
+      "published_at": "2026-01-21T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.979,
+      "title": "Story 020",
+      "url": "https://example.com/story-020"
+    },
+    {
+      "published_at": "2026-01-22T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.978,
+      "title": "Story 021",
+      "url": "https://example.com/story-021"
+    },
+    {
+      "published_at": "2026-01-23T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.977,
+      "title": "Story 022",
+      "url": "https://example.com/story-022"
+    },
+    {
+      "published_at": "2026-01-24T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.976,
+      "title": "Story 023",
+      "url": "https://example.com/story-023"
+    },
+    {
+      "published_at": "2026-01-25T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.975,
+      "title": "Story 024",
+      "url": "https://example.com/story-024"
+    },
+    {
+      "published_at": "2026-01-26T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.974,
+      "title": "Story 025",
+      "url": "https://example.com/story-025"
+    },
+    {
+      "published_at": "2026-01-27T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.973,
+      "title": "Story 026",
+      "url": "https://example.com/story-026"
+    },
+    {
+      "published_at": "2026-01-28T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.972,
+      "title": "Story 027",
+      "url": "https://example.com/story-027"
+    },
+    {
+      "published_at": "2026-01-01T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.971,
+      "title": "Story 028",
+      "url": "https://example.com/story-028"
+    },
+    {
+      "published_at": "2026-01-02T00:00:00Z",
+      "scrape_policy": "full_scrape_allowed",
+      "selection_reason": "Mocked model score.",
+      "source": "ExampleFeed",
+      "theme_match_score": 0.97,
+      "title": "Story 029",
+      "url": "https://example.com/story-029"
+    }
+  ],
+  "selector_model": {
+    "name": "gpt-4.1-mini",
+    "prompt_version": "phase2-theme-selector-v1",
+    "temperature": 0.0,
+    "top_p": 1.0
+  },
+  "theme": "AI",
+  "tie_break_policy": "published_at_desc_then_canonical_url_asc"
+}
