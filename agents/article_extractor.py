@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 import logging
 import socket
 import re
@@ -69,6 +70,17 @@ META_DESCRIPTION_KEYS = (
     "og:description",
     "twitter:description",
 )
+
+
+def _phase4_error(*, code: str, message: str, details: dict[str, Any] | None = None) -> str:
+    payload = {
+        "phase": 4,
+        "agent": "article_extractor",
+        "code": code,
+        "message": message,
+        "details": details or {},
+    }
+    return json.dumps(payload, ensure_ascii=True, sort_keys=True)
 
 
 class _ArticleHTMLParser(HTMLParser):
@@ -382,6 +394,47 @@ def _failed_full_scrape_article(
     }
 
 
+def _all_candidates_failed_article(
+    selected_url: str,
+    selected_item: dict[str, Any],
+) -> dict[str, Any]:
+    fallback_title = _normalize_text(str(selected_item.get("title", ""))) or "Article extraction failed"
+    normalized_published_at = _normalize_text(str(selected_item.get("published_at", "")))
+    return {
+        "title": fallback_title,
+        "author": "",
+        "published_at": normalized_published_at,
+        "source_url": selected_url,
+        "paragraphs": [],
+        "scrape_policy": SCRAPE_POLICY_FULL,
+        "metadata_only": False,
+        "extraction_status": "all_candidates_failed",
+        "policy_resolution_failed": False,
+    }
+
+
+def _phase4_candidates(
+    state: PipelineState,
+    selected_url: str,
+) -> list[tuple[int, str, dict[str, Any]]]:
+    ranked_items = state.get("ranked_items")
+    if isinstance(ranked_items, list) and ranked_items:
+        candidates: list[tuple[int, str, dict[str, Any]]] = []
+        seen_urls: set[str] = set()
+        for index, raw_item in enumerate(ranked_items):
+            if not isinstance(raw_item, dict):
+                continue
+            url = str(raw_item.get("url", "")).strip()
+            if not url or url in seen_urls:
+                continue
+            seen_urls.add(url)
+            candidates.append((index, url, dict(raw_item)))
+        return candidates
+
+    fallback_item = _selected_item_metadata(state, selected_url)
+    return [(0, selected_url, fallback_item)]
+
+
 def _read_meta_value(meta: dict[str, str], keys: tuple[str, ...]) -> str:
     for key in keys:
         value = _normalize_text(meta.get(key, ""))
@@ -606,63 +659,78 @@ def _write_article_artifacts(
 def run(state: PipelineState) -> PipelineState:
     next_state = copy_state(state)
     selected_url = next_state["selected_url"] or "https://example.com/phase0/no_selection"
-    selected_item = _selected_item_metadata(next_state, selected_url)
-    selected_policy, policy_resolution_failed = _resolve_selected_scrape_policy(next_state, selected_url)
     output_dir = _output_dir()
 
     counters = next_state["metrics"]["counters"]
     flags = next_state["metrics"]["flags"]
-    flags["phase4_selected_scrape_policy"] = selected_policy
-    flags["phase4_policy_resolution_failed"] = policy_resolution_failed
-    counters["phase4_policy_resolution_failed_count"] = 1 if policy_resolution_failed else 0
-
-    if selected_policy == SCRAPE_POLICY_METADATA_ONLY:
-        next_state["article"] = _metadata_only_article(
-            selected_url,
-            selected_item,
-            extraction_status="policy_resolution_failed" if policy_resolution_failed else "policy_blocked",
-            policy_resolution_failed=policy_resolution_failed,
-        )
-        counters["phase4_policy_blocked_count"] = 1
-        flags["phase4_policy_blocked_metadata_only"] = True
-        flags["phase4_html_fetch_attempted"] = False
-        flags["phase4_html_fetch_succeeded"] = False
-        flags["phase4_extraction_failed"] = False
-        counters["phase4_extracted_paragraph_count"] = 0
-        _write_article_artifacts(
-            output_dir=output_dir,
-            article_payload=next_state["article"],
-            raw_html=None,
-        )
-        logger.info(
-            "PHASE4_EXTRACTION_SUMMARY policy=%s metadata_only=%s html_fetch_attempted=%s html_fetch_succeeded=%s paragraphs=%s",
-            flags["phase4_selected_scrape_policy"],
-            next_state["article"]["metadata_only"],
-            flags["phase4_html_fetch_attempted"],
-            flags["phase4_html_fetch_succeeded"],
-            counters["phase4_extracted_paragraph_count"],
-        )
-        return next_state
-
-    flags["phase4_html_fetch_attempted"] = True
+    flags["phase4_selected_scrape_policy"] = SCRAPE_POLICY_FULL
+    flags["phase4_policy_resolution_failed"] = False
     flags["phase4_policy_blocked_metadata_only"] = False
+    flags["phase4_fallback_used"] = False
+    flags["phase4_selected_rank_index"] = -1
+    flags["phase4_attempted_urls"] = []
+    flags["phase4_attempt_failure_reasons"] = []
+    counters["phase4_policy_resolution_failed_count"] = 0
     counters["phase4_policy_blocked_count"] = 0
-    if not _is_public_fetchable_url(selected_url):
-        logger.warning("PHASE4_URL_BLOCKED url=%s", selected_url)
-        next_state["article"] = _failed_full_scrape_article(
-            selected_url,
-            selected_item,
-            status="url_blocked",
-            policy_resolution_failed=policy_resolution_failed,
-        )
-        flags["phase4_html_fetch_attempted"] = False
-        flags["phase4_html_fetch_succeeded"] = False
-        flags["phase4_extraction_failed"] = True
+    candidates = _phase4_candidates(next_state, selected_url)
+    attempted_urls: list[str] = []
+    failure_reasons: list[str] = []
+    fetch_attempted_any = False
+
+    for rank_index, candidate_url, candidate_item in candidates:
+        attempted_urls.append(candidate_url)
+        if not _is_public_fetchable_url(candidate_url):
+            logger.warning("PHASE4_URL_BLOCKED url=%s rank_index=%s", candidate_url, rank_index)
+            failure_reasons.append("url_blocked")
+            continue
+
+        fetch_attempted_any = True
+        try:
+            raw_html = _fetch_html(candidate_url)
+        except Exception:
+            logger.exception("PHASE4_HTML_FETCH_FAILED url=%s rank_index=%s", candidate_url, rank_index)
+            failure_reasons.append("fetch_failed")
+            continue
+
+        try:
+            parser = _ArticleHTMLParser()
+            parser.feed(raw_html)
+            parser.close()
+            article_payload = _build_full_scrape_article(
+                selected_url=candidate_url,
+                selected_item=candidate_item,
+                parser=parser,
+                policy_resolution_failed=False,
+            )
+        except Exception:
+            logger.exception("PHASE4_PARSE_FAILED url=%s rank_index=%s", candidate_url, rank_index)
+            failure_reasons.append("parse_failed")
+            continue
+
+        if not article_payload.get("paragraphs"):
+            logger.warning("PHASE4_EMPTY_PARAGRAPHS url=%s rank_index=%s", candidate_url, rank_index)
+            failure_reasons.append("empty_paragraphs")
+            continue
+
+        next_state["selected_url"] = candidate_url
+        next_state["article"] = article_payload
+
+        flags["phase4_html_fetch_attempted"] = fetch_attempted_any
+        flags["phase4_html_fetch_succeeded"] = True
+        flags["phase4_extraction_failed"] = False
+        flags["phase4_fallback_used"] = rank_index > 0
+        flags["phase4_selected_rank_index"] = rank_index
+        flags["phase4_attempted_urls"] = list(attempted_urls)
+        flags["phase4_attempt_failure_reasons"] = list(failure_reasons)
+        counters["phase4_candidate_attempt_count"] = len(attempted_urls)
+        counters["phase4_candidate_failure_count"] = len(failure_reasons)
+        counters["phase4_candidate_exhausted_count"] = 0
         counters["phase4_extracted_paragraph_count"] = len(next_state["article"]["paragraphs"])
+
         _write_article_artifacts(
             output_dir=output_dir,
             article_payload=next_state["article"],
-            raw_html=None,
+            raw_html=raw_html,
         )
         logger.info(
             "PHASE4_EXTRACTION_SUMMARY policy=%s metadata_only=%s html_fetch_attempted=%s html_fetch_succeeded=%s paragraphs=%s",
@@ -674,54 +742,31 @@ def run(state: PipelineState) -> PipelineState:
         )
         return next_state
 
-    try:
-        raw_html = _fetch_html(selected_url)
-    except Exception:
-        logger.exception("PHASE4_HTML_FETCH_FAILED")
-        next_state["article"] = _failed_full_scrape_article(
-            selected_url,
-            selected_item,
-            status="fetch_failed",
-            policy_resolution_failed=policy_resolution_failed,
-        )
-        flags["phase4_html_fetch_succeeded"] = False
-        flags["phase4_extraction_failed"] = True
-        counters["phase4_extracted_paragraph_count"] = len(next_state["article"]["paragraphs"])
-        _write_article_artifacts(
-            output_dir=output_dir,
-            article_payload=next_state["article"],
-            raw_html=None,
-        )
-        logger.info(
-            "PHASE4_EXTRACTION_SUMMARY policy=%s metadata_only=%s html_fetch_attempted=%s html_fetch_succeeded=%s paragraphs=%s",
-            flags["phase4_selected_scrape_policy"],
-            next_state["article"]["metadata_only"],
-            flags["phase4_html_fetch_attempted"],
-            flags["phase4_html_fetch_succeeded"],
-            counters["phase4_extracted_paragraph_count"],
-        )
-        return next_state
-
-    parser = _ArticleHTMLParser()
-    parser.feed(raw_html)
-    parser.close()
-
-    next_state["article"] = _build_full_scrape_article(
-        selected_url=selected_url,
-        selected_item=selected_item,
-        parser=parser,
-        policy_resolution_failed=policy_resolution_failed,
+    failed_url = attempted_urls[-1] if attempted_urls else selected_url
+    failed_item = _selected_item_metadata(next_state, failed_url)
+    next_state["selected_url"] = failed_url
+    next_state["article"] = _all_candidates_failed_article(
+        failed_url,
+        failed_item,
     )
-    flags["phase4_html_fetch_succeeded"] = True
-    flags["phase4_extraction_failed"] = False
-    counters["phase4_extracted_paragraph_count"] = len(next_state["article"]["paragraphs"])
+
+    flags["phase4_html_fetch_attempted"] = fetch_attempted_any
+    flags["phase4_html_fetch_succeeded"] = False
+    flags["phase4_extraction_failed"] = True
+    flags["phase4_fallback_used"] = False
+    flags["phase4_selected_rank_index"] = -1
+    flags["phase4_attempted_urls"] = list(attempted_urls)
+    flags["phase4_attempt_failure_reasons"] = list(failure_reasons)
+    counters["phase4_candidate_attempt_count"] = len(attempted_urls)
+    counters["phase4_candidate_failure_count"] = len(failure_reasons)
+    counters["phase4_candidate_exhausted_count"] = 1
+    counters["phase4_extracted_paragraph_count"] = 0
+
     _write_article_artifacts(
         output_dir=output_dir,
         article_payload=next_state["article"],
-        raw_html=raw_html,
+        raw_html=None,
     )
-
-    counters["phase4_policy_blocked_count"] = 0
     logger.info(
         "PHASE4_EXTRACTION_SUMMARY policy=%s metadata_only=%s html_fetch_attempted=%s html_fetch_succeeded=%s paragraphs=%s",
         flags["phase4_selected_scrape_policy"],
@@ -730,4 +775,14 @@ def run(state: PipelineState) -> PipelineState:
         flags["phase4_html_fetch_succeeded"],
         counters["phase4_extracted_paragraph_count"],
     )
-    return next_state
+    raise RuntimeError(
+        _phase4_error(
+            code="all_ranked_candidates_failed",
+            message="Phase 4 failed to extract content with paragraphs from all ranked candidates.",
+            details={
+                "attempted_count": len(attempted_urls),
+                "attempted_urls": attempted_urls,
+                "failure_reasons": failure_reasons,
+            },
+        )
+    )

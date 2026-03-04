@@ -155,7 +155,7 @@ class Phase4ArticleExtractorTests(unittest.TestCase):
         self.assertTrue(final_state["metrics"]["flags"]["phase4_html_fetch_attempted"])
         self.assertTrue(final_state["metrics"]["flags"]["phase4_html_fetch_succeeded"])
 
-    def test_metadata_only_policy_skips_fetch_and_raw_html_artifact(self) -> None:
+    def test_metadata_only_policy_no_longer_blocks_fetch(self) -> None:
         root = self._make_temp_root()
         state = self._make_state()
         selected_url = "https://example.com/metadata-only"
@@ -169,103 +169,174 @@ class Phase4ArticleExtractorTests(unittest.TestCase):
                 "scrape_policy": SCRAPE_POLICY_METADATA_ONLY,
             }
         ]
+        html = (
+            "<html><head><title>Fetched Story</title></head><body>"
+            "<article><p>This paragraph is long enough to keep extraction in full scrape mode.</p></article>"
+            "</body></html>"
+        )
 
-        with patch.object(article_extractor, "_fetch_html") as fetch_html:
+        with patch.object(article_extractor, "_fetch_html", return_value=html) as fetch_html:
             final_state = self._run_extractor(root=root, state=state)
 
-        self.assertTrue(final_state["article"]["metadata_only"])
-        self.assertEqual("policy_blocked", final_state["article"]["extraction_status"])
-        self.assertEqual("Blocked Story & More", final_state["article"]["title"])
-        self.assertEqual("2026-01-03T00:00:00Z", final_state["article"]["published_at"])
-        self.assertFalse(self.HTML_TAG_PATTERN.search(final_state["article"]["title"]))
-        self.assertFalse(self.HTML_TAG_PATTERN.search(final_state["article"]["published_at"]))
-        self.assertTrue(final_state["metrics"]["flags"]["phase4_policy_blocked_metadata_only"])
-        self.assertFalse(final_state["metrics"]["flags"]["phase4_html_fetch_attempted"])
-        self.assertFalse((root / "outputs" / "article_raw.html").exists())
+        self.assertFalse(final_state["article"]["metadata_only"])
+        self.assertEqual("extracted", final_state["article"]["extraction_status"])
+        self.assertEqual(SCRAPE_POLICY_FULL, final_state["article"]["scrape_policy"])
+        self.assertEqual(SCRAPE_POLICY_FULL, final_state["metrics"]["flags"]["phase4_selected_scrape_policy"])
+        self.assertFalse(final_state["metrics"]["flags"]["phase4_policy_blocked_metadata_only"])
+        self.assertTrue(final_state["metrics"]["flags"]["phase4_html_fetch_attempted"])
+        self.assertTrue((root / "outputs" / "article_raw.html").exists())
         self.assertTrue((root / "outputs" / "article.json").exists())
-        fetch_html.assert_not_called()
+        fetch_html.assert_called_once_with(selected_url)
 
-    def test_db_fallback_invalid_policy_fails_closed_without_html_fetch(self) -> None:
+    def test_phase4_does_not_use_db_policy_lookup_gate(self) -> None:
         root = self._make_temp_root()
-        selected_url = "https://example.com/db-invalid-policy"
-
-        connection = initialize_database(root / "data" / "db" / "app.sqlite")
-        try:
-            with connection:
-                connection.execute(
-                    """
-                    INSERT INTO rss_items (
-                        url, title, title_hash, source, scrape_policy, published_at, discovered_at
-                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        selected_url,
-                        "DB Invalid Policy Story",
-                        "db-invalid-policy-title-hash",
-                        "Example",
-                        "invalid_policy",
-                        "2026-01-03T00:00:00Z",
-                        "2026-01-03T00:00:00Z",
-                    ),
-                )
-        finally:
-            connection.close()
-
+        selected_url = "https://example.com/policy-not-used"
         state = self._make_state()
         state["selected_url"] = selected_url
         state["ranked_items"] = [
             {
                 "url": selected_url,
-                "title": "DB Invalid Policy Story",
+                "title": "Policy Not Used Story",
                 "source": "Example",
                 "published_at": "2026-01-03T00:00:00Z",
+                "summary": "summary",
             }
         ]
+        html = (
+            "<html><head><title>Policy Ignored</title></head><body>"
+            "<article><p>This paragraph is long enough for extraction when policy gate is disabled.</p></article>"
+            "</body></html>"
+        )
 
-        with patch.object(article_extractor, "_fetch_html") as fetch_html:
+        with (
+            patch.object(article_extractor, "_resolve_policy_from_db", return_value=SCRAPE_POLICY_METADATA_ONLY) as db_lookup,
+            patch.object(article_extractor, "_fetch_html", return_value=html) as fetch_html,
+        ):
             final_state = self._run_extractor(root=root, state=state)
 
-        self.assertTrue(final_state["article"]["metadata_only"])
-        self.assertEqual("policy_resolution_failed", final_state["article"]["extraction_status"])
-        self.assertTrue(final_state["article"]["policy_resolution_failed"])
-        self.assertEqual(SCRAPE_POLICY_METADATA_ONLY, final_state["article"]["scrape_policy"])
-        self.assertTrue(final_state["metrics"]["flags"]["phase4_policy_resolution_failed"])
-        self.assertFalse(final_state["metrics"]["flags"]["phase4_html_fetch_attempted"])
-        self.assertFalse((root / "outputs" / "article_raw.html").exists())
-        fetch_html.assert_not_called()
+        self.assertEqual("extracted", final_state["article"]["extraction_status"])
+        self.assertFalse(final_state["metrics"]["flags"]["phase4_policy_resolution_failed"])
+        fetch_html.assert_called_once_with(selected_url)
+        db_lookup.assert_not_called()
 
-    def test_fetch_failure_returns_structured_article_json(self) -> None:
+    def test_ranked_fallback_uses_second_candidate_after_fetch_failure(self) -> None:
+        root = self._make_temp_root()
+        first_url = "https://example.com/first"
+        second_url = "https://example.com/second"
+        state = self._make_state()
+        state["selected_url"] = first_url
+        state["ranked_items"] = [
+            {"url": first_url, "title": "First", "source": "Example", "scrape_policy": SCRAPE_POLICY_FULL},
+            {"url": second_url, "title": "Second", "source": "Example", "scrape_policy": SCRAPE_POLICY_FULL},
+        ]
+        html = (
+            "<html><head><title>Second Winner</title></head><body>"
+            "<article><p>This paragraph is long enough to satisfy extraction success on fallback candidate.</p></article>"
+            "</body></html>"
+        )
+
+        with (
+            patch.object(article_extractor, "_is_public_fetchable_url", return_value=True),
+            patch.object(article_extractor, "_fetch_html", side_effect=[RuntimeError("timeout"), html]) as fetch_html,
+        ):
+            final_state = self._run_extractor(root=root, state=state)
+
+        self.assertEqual(second_url, final_state["selected_url"])
+        self.assertEqual("extracted", final_state["article"]["extraction_status"])
+        self.assertTrue(final_state["metrics"]["flags"]["phase4_fallback_used"])
+        self.assertEqual(1, final_state["metrics"]["flags"]["phase4_selected_rank_index"])
+        self.assertEqual([first_url, second_url], final_state["metrics"]["flags"]["phase4_attempted_urls"])
+        self.assertEqual(["fetch_failed"], final_state["metrics"]["flags"]["phase4_attempt_failure_reasons"])
+        self.assertEqual(2, final_state["metrics"]["counters"]["phase4_candidate_attempt_count"])
+        self.assertEqual(1, final_state["metrics"]["counters"]["phase4_candidate_failure_count"])
+        fetch_html.assert_any_call(first_url)
+        fetch_html.assert_any_call(second_url)
+
+    def test_ranked_fallback_uses_second_candidate_after_empty_paragraphs(self) -> None:
+        root = self._make_temp_root()
+        first_url = "https://example.com/empty-first"
+        second_url = "https://example.com/non-empty-second"
+        state = self._make_state()
+        state["selected_url"] = first_url
+        state["ranked_items"] = [
+            {"url": first_url, "title": "First", "source": "Example", "scrape_policy": SCRAPE_POLICY_FULL},
+            {"url": second_url, "title": "Second", "source": "Example", "scrape_policy": SCRAPE_POLICY_FULL},
+        ]
+        empty_html = "<html><head><title>Empty First</title></head><body><article></article></body></html>"
+        good_html = (
+            "<html><head><title>Winner</title></head><body>"
+            "<article><p>This fallback paragraph is valid and should become the selected extraction output.</p></article>"
+            "</body></html>"
+        )
+        with (
+            patch.object(article_extractor, "_is_public_fetchable_url", return_value=True),
+            patch.object(article_extractor, "_fetch_html", side_effect=[empty_html, good_html]),
+        ):
+            final_state = self._run_extractor(root=root, state=state)
+
+        self.assertEqual(second_url, final_state["selected_url"])
+        self.assertEqual("extracted", final_state["article"]["extraction_status"])
+        self.assertEqual(["empty_paragraphs"], final_state["metrics"]["flags"]["phase4_attempt_failure_reasons"])
+        self.assertEqual(2, final_state["metrics"]["counters"]["phase4_candidate_attempt_count"])
+        self.assertEqual(1, final_state["metrics"]["counters"]["phase4_candidate_failure_count"])
+
+    def test_all_candidates_failed_raises_runtime_error_and_reports_exhaustion_metrics(self) -> None:
         root = self._make_temp_root()
         state = self._make_state()
-        selected_url = "https://example.com/fetch-failure"
-        state["selected_url"] = selected_url
+        first_url = "https://example.com/first-fail"
+        second_url = "https://example.com/second-fail"
+        state["selected_url"] = first_url
         state["ranked_items"] = [
             {
-                "url": selected_url,
-                "title": "<em>Failure Story</em> &amp; More",
+                "url": first_url,
+                "title": "<em>Failure Story 1</em> &amp; More",
                 "source": "TechCrunch",
                 "published_at": "<span>2026-01-03T00:00:00Z</span>",
                 "summary": "Fallback summary content for extraction failure path.",
                 "scrape_policy": SCRAPE_POLICY_FULL,
-            }
+            },
+            {
+                "url": second_url,
+                "title": "Failure Story 2",
+                "source": "TechCrunch",
+                "published_at": "2026-01-03T00:00:00Z",
+                "summary": "Another failure.",
+                "scrape_policy": SCRAPE_POLICY_FULL,
+            },
         ]
 
-        final_state = self._run_extractor(
-            root=root,
-            state=state,
-            fetch_side_effect=RuntimeError("network down"),
-        )
+        with (
+            patch.object(article_extractor, "_project_root", return_value=root),
+            patch.object(
+                article_extractor,
+                "_load_runtime_pipeline_config",
+                return_value={"output_dir": "outputs", "database_path": "data/db/app.sqlite"},
+            ),
+            patch.object(article_extractor, "copy_state", side_effect=lambda value: value),
+            patch.object(article_extractor, "_is_public_fetchable_url", return_value=True),
+            patch.object(article_extractor, "_fetch_html", side_effect=RuntimeError("network down")),
+        ):
+            with self.assertRaises(RuntimeError) as raised:
+                article_extractor.run(state)
 
-        article = final_state["article"]
-        self.assertFalse(article["metadata_only"])
-        self.assertEqual("fetch_failed", article["extraction_status"])
-        self.assertEqual(SCRAPE_POLICY_FULL, article["scrape_policy"])
-        self.assertEqual("Failure Story & More", article["title"])
-        self.assertEqual("2026-01-03T00:00:00Z", article["published_at"])
-        self.assertFalse(self.HTML_TAG_PATTERN.search(article["title"]))
-        self.assertFalse(self.HTML_TAG_PATTERN.search(article["published_at"]))
-        self.assertFalse(final_state["metrics"]["flags"]["phase4_html_fetch_succeeded"])
-        self.assertTrue(final_state["metrics"]["flags"]["phase4_extraction_failed"])
+        self.assertIn("all_ranked_candidates_failed", str(raised.exception))
+        self.assertEqual("all_candidates_failed", state["article"]["extraction_status"])
+        self.assertTrue(state["metrics"]["flags"]["phase4_extraction_failed"])
+        self.assertFalse(state["metrics"]["flags"]["phase4_html_fetch_succeeded"])
+        self.assertEqual(
+            [first_url, second_url],
+            state["metrics"]["flags"]["phase4_attempted_urls"],
+        )
+        self.assertEqual(
+            ["fetch_failed", "fetch_failed"],
+            state["metrics"]["flags"]["phase4_attempt_failure_reasons"],
+        )
+        self.assertEqual(2, state["metrics"]["counters"]["phase4_candidate_attempt_count"])
+        self.assertEqual(2, state["metrics"]["counters"]["phase4_candidate_failure_count"])
+        self.assertEqual(1, state["metrics"]["counters"]["phase4_candidate_exhausted_count"])
+        artifact = json.loads((root / "outputs" / "article.json").read_text(encoding="utf-8"))
+        self.assertEqual("all_candidates_failed", artifact["extraction_status"])
+        self.assertEqual(SCRAPE_POLICY_FULL, artifact["scrape_policy"])
         self.assertFalse((root / "outputs" / "article_raw.html").exists())
         self.assertTrue((root / "outputs" / "article.json").exists())
 
@@ -357,11 +428,11 @@ class Phase4ArticleExtractorTests(unittest.TestCase):
             }
         ]
         with patch.object(article_extractor, "_fetch_html") as fetch_html:
-            final_state = self._run_extractor(root=root, state=state)
+            with self.assertRaises(RuntimeError):
+                self._run_extractor(root=root, state=state)
 
-        self.assertEqual("url_blocked", final_state["article"]["extraction_status"])
-        self.assertTrue(final_state["metrics"]["flags"]["phase4_extraction_failed"])
-        self.assertFalse(final_state["metrics"]["flags"]["phase4_html_fetch_attempted"])
+        artifact = json.loads((root / "outputs" / "article.json").read_text(encoding="utf-8"))
+        self.assertEqual("all_candidates_failed", artifact["extraction_status"])
         self.assertFalse((root / "outputs" / "article_raw.html").exists())
         fetch_html.assert_not_called()
 

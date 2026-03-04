@@ -1,4 +1,25 @@
 # CHANGELOG
+## 0.2.9 - Phase 4 Ranked Fallback Extraction and Full Scrape Policy
+### What Changed
+- Updated `configs/rss_feeds.yaml` so all feeds now use `scrape_policy: full_scrape_allowed`.
+- Updated Phase 4 extraction runtime to prioritize content quality:
+  - No metadata-only policy blocking in the Phase 4 execution path.
+  - Phase 4 now iterates ranked URLs from Phase 3 in order and attempts extraction until it gets usable content.
+  - Success condition is strict: extracted article must contain `paragraphs > 0`.
+- Added fail-closed behavior for extraction exhaustion:
+  - If all ranked candidates fail extraction, Phase 4 raises a structured error and the pipeline stops before Phase 5.
+  - Prevents generic script generation from insufficient content contexts.
+
+### Why
+- Improve output quality by ensuring script generation only proceeds after real article content is extracted.
+- Reduce degraded runs where top-ranked URL fails fetch/parsing and downstream phases continue with weak metadata.
+- Enforce deterministic fallback behavior over ranked candidates instead of single-URL extraction.
+
+### Expected Impact
+- Higher probability of content-rich scripts and better video quality.
+- More transparent extraction diagnostics via attempted URL/failure reason metrics.
+- Clear hard-failure signal when no ranked candidate is extractable.
+
 ## 0.2.8 - Phase 3 Timeout and Retry Architecture Hardening
 ### What Changed
 - Updated Phase 3 ranking architecture to make model timeout configurable via `configs/pipeline.yaml`:

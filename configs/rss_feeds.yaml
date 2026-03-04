@@ -7,7 +7,7 @@ feeds:
     scrape_policy: full_scrape_allowed
   - name: Wired
     url: https://www.wired.com/feed/rss
-    scrape_policy: metadata_only
+    scrape_policy: full_scrape_allowed
   - name: MIT Technology Review
     url: https://www.technologyreview.com/feed/
     scrape_policy: full_scrape_allowed
@@ -25,7 +25,7 @@ feeds:
     scrape_policy: full_scrape_allowed
   - name: Bloomberg - Technology
     url: https://feeds.bloomberg.com/technology/news.rss
-    scrape_policy: metadata_only
+    scrape_policy: full_scrape_allowed
   - name: Semiconductor Engineering
     url: https://semiengineering.com/feed/
     scrape_policy: full_scrape_allowed
