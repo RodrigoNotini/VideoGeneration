@@ -109,6 +109,7 @@ def _validate_pipeline_config(config: dict[str, Any]) -> None:
             "rss_feed_rotation_basis",
             "phase2_selector",
             "phase3_ranker",
+            "phase5_script_writer",
             "output_dir",
             "database_path",
             "deterministic_seed",
@@ -254,6 +255,7 @@ def _validate_pipeline_config(config: dict[str, Any]) -> None:
             "criteria_policy_version",
             "target_selection_count",
             "tie_break_policy",
+            "timeout_seconds",
             "deterministic",
             "stability",
         ),
@@ -290,6 +292,14 @@ def _validate_pipeline_config(config: dict[str, Any]) -> None:
     if float(ranker_deterministic["top_p"]) <= 0 or float(ranker_deterministic["top_p"]) > 1:
         raise ConfigError("configs/pipeline.yaml phase3_ranker.deterministic.top_p must be in (0, 1]")
 
+    ranker_timeout_seconds = ranker["timeout_seconds"]
+    if not isinstance(ranker_timeout_seconds, (int, float)):
+        raise ConfigError("configs/pipeline.yaml phase3_ranker.timeout_seconds must be numeric")
+    if not math.isfinite(float(ranker_timeout_seconds)):
+        raise ConfigError("configs/pipeline.yaml phase3_ranker.timeout_seconds must be finite")
+    if float(ranker_timeout_seconds) <= 0:
+        raise ConfigError("configs/pipeline.yaml phase3_ranker.timeout_seconds must be > 0")
+
     stability = ranker["stability"]
     if not isinstance(stability, dict):
         raise ConfigError("configs/pipeline.yaml phase3_ranker.stability must be a mapping")
@@ -305,6 +315,65 @@ def _validate_pipeline_config(config: dict[str, Any]) -> None:
         raise ConfigError("configs/pipeline.yaml phase3_ranker.stability.min_overlap_ratio must be finite")
     if float(min_overlap_ratio) <= 0 or float(min_overlap_ratio) > 1:
         raise ConfigError("configs/pipeline.yaml phase3_ranker.stability.min_overlap_ratio must be in (0, 1]")
+
+    script_writer = config["phase5_script_writer"]
+    if not isinstance(script_writer, dict):
+        raise ConfigError("configs/pipeline.yaml 'phase5_script_writer' must be a mapping")
+    _require_keys(
+        script_writer,
+        ("model", "prompt_version", "schema_path", "deterministic", "timeout_seconds"),
+        "configs/pipeline.yaml phase5_script_writer",
+    )
+    for key in ("model", "prompt_version", "schema_path"):
+        if not isinstance(script_writer[key], str) or not script_writer[key].strip():
+            raise ConfigError(
+                f"configs/pipeline.yaml phase5_script_writer.{key} must be a non-empty string"
+            )
+    schema_path = Path(script_writer["schema_path"])
+    if schema_path.is_absolute() or schema_path.drive:
+        raise ConfigError(
+            "configs/pipeline.yaml phase5_script_writer.schema_path must be a project-relative path"
+        )
+    if any(part == ".." for part in schema_path.parts):
+        raise ConfigError(
+            "configs/pipeline.yaml phase5_script_writer.schema_path must not traverse parent directories"
+        )
+
+    script_writer_deterministic = script_writer["deterministic"]
+    if not isinstance(script_writer_deterministic, dict):
+        raise ConfigError("configs/pipeline.yaml phase5_script_writer.deterministic must be a mapping")
+    _require_keys(
+        script_writer_deterministic,
+        ("temperature", "top_p"),
+        "configs/pipeline.yaml phase5_script_writer.deterministic",
+    )
+    for key in ("temperature", "top_p"):
+        value = script_writer_deterministic[key]
+        if not isinstance(value, (int, float)):
+            raise ConfigError(
+                f"configs/pipeline.yaml phase5_script_writer.deterministic.{key} must be numeric"
+            )
+        if not math.isfinite(float(value)):
+            raise ConfigError(
+                f"configs/pipeline.yaml phase5_script_writer.deterministic.{key} must be finite"
+            )
+    if float(script_writer_deterministic["temperature"]) < 0:
+        raise ConfigError(
+            "configs/pipeline.yaml phase5_script_writer.deterministic.temperature must be >= 0"
+        )
+    if (
+        float(script_writer_deterministic["top_p"]) <= 0
+        or float(script_writer_deterministic["top_p"]) > 1
+    ):
+        raise ConfigError("configs/pipeline.yaml phase5_script_writer.deterministic.top_p must be in (0, 1]")
+
+    timeout_seconds = script_writer["timeout_seconds"]
+    if not isinstance(timeout_seconds, (int, float)):
+        raise ConfigError("configs/pipeline.yaml phase5_script_writer.timeout_seconds must be numeric")
+    if not math.isfinite(float(timeout_seconds)):
+        raise ConfigError("configs/pipeline.yaml phase5_script_writer.timeout_seconds must be finite")
+    if float(timeout_seconds) <= 0:
+        raise ConfigError("configs/pipeline.yaml phase5_script_writer.timeout_seconds must be > 0")
 
     versions = config["versions"]
     if not isinstance(versions, dict):

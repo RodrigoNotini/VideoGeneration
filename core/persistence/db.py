@@ -286,7 +286,13 @@ def fetch_rss_item_scrape_policy_by_url(connection: sqlite3.Connection, url: str
     ).fetchone()
     if not row:
         return None
-    return resolve_scrape_policy(row[0], fallback_to_full=True)
+    raw_policy = row[0]
+    if raw_policy is None or not str(raw_policy).strip():
+        return None
+    try:
+        return resolve_scrape_policy(raw_policy, fallback_to_full=False)
+    except ValueError:
+        return None
 
 
 def _now_utc_iso() -> str:

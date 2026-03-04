@@ -218,6 +218,22 @@ def _load_runtime_pipeline_config() -> dict[str, Any]:
     return dict(configs.get("pipeline", {}))
 
 
+def _resolve_project_confined_path(configured_path_text: str, *, field_name: str) -> Path:
+    configured_path = Path(configured_path_text)
+    if configured_path.is_absolute() or configured_path.anchor:
+        raise ValueError(f"{field_name} must be a relative path within project root")
+    if ".." in configured_path.parts:
+        raise ValueError(f"{field_name} cannot contain parent traversal segments")
+
+    project_root = _project_root().resolve()
+    confined_path = (project_root / configured_path).resolve()
+    try:
+        confined_path.relative_to(project_root)
+    except ValueError as error:
+        raise ValueError(f"{field_name} resolves outside project root") from error
+    return confined_path
+
+
 def _output_dir() -> Path:
     try:
         pipeline_cfg = _load_runtime_pipeline_config()
@@ -226,7 +242,7 @@ def _output_dir() -> Path:
         configured_dir = ""
     if not configured_dir:
         configured_dir = DEFAULT_OUTPUT_DIR
-    return _project_root() / configured_dir
+    return _resolve_project_confined_path(configured_dir, field_name="pipeline.output_dir")
 
 
 def _normalize_text(value: str) -> str:
@@ -263,7 +279,13 @@ def _resolve_policy_from_db(selected_url: str) -> str | None:
         return None
 
     try:
-        connection = initialize_database(_project_root() / db_rel_path)
+        db_path = _resolve_project_confined_path(db_rel_path, field_name="pipeline.database_path")
+    except ValueError:
+        logger.exception("PHASE4_POLICY_DB_PATH_INVALID")
+        return None
+
+    try:
+        connection = initialize_database(db_path)
     except Exception:
         logger.exception("PHASE4_POLICY_DB_INIT_FAILED")
         return None
@@ -321,10 +343,12 @@ def _metadata_only_article(
     extraction_status: str = "policy_blocked",
     policy_resolution_failed: bool = False,
 ) -> dict[str, Any]:
+    normalized_title = _normalize_text(str(selected_item.get("title", "")))
+    normalized_published_at = _normalize_text(str(selected_item.get("published_at", "")))
     return {
-        "title": str(selected_item.get("title", "")).strip() or "Metadata-only article blocked by source policy",
+        "title": normalized_title or "Metadata-only article blocked by source policy",
         "author": "",
-        "published_at": str(selected_item.get("published_at", "")).strip(),
+        "published_at": normalized_published_at,
         "source_url": selected_url,
         "paragraphs": [],
         "scrape_policy": SCRAPE_POLICY_METADATA_ONLY,
@@ -341,13 +365,14 @@ def _failed_full_scrape_article(
     status: str,
     policy_resolution_failed: bool,
 ) -> dict[str, Any]:
-    fallback_title = str(selected_item.get("title", "")).strip() or "Article extraction failed"
+    fallback_title = _normalize_text(str(selected_item.get("title", ""))) or "Article extraction failed"
     fallback_summary = _normalize_text(str(selected_item.get("summary", "")).strip())
+    normalized_published_at = _normalize_text(str(selected_item.get("published_at", "")))
     paragraphs = [fallback_summary[:MAX_PARAGRAPH_CHARS]] if fallback_summary else []
     return {
         "title": fallback_title,
         "author": "",
-        "published_at": str(selected_item.get("published_at", "")).strip(),
+        "published_at": normalized_published_at,
         "source_url": selected_url,
         "paragraphs": paragraphs,
         "scrape_policy": SCRAPE_POLICY_FULL,

@@ -104,8 +104,8 @@ If a phase introduces new third-party libraries, it MUST update `requirements/ph
 | 1 | RSS Discovery | DONE |
 | 2 | Theme URL Selection | DONE |
 | 3 | Interestingness Ranking | DONE |
-| 4 | Article Extraction | IN PROGRESS |
-| 5 | Script Generation | LOCKED |
+| 4 | Article Extraction | DONE |
+| 5 | Script Generation | IN PROGRESS |
 | 6 | Validation Loop | LOCKED |
 | 7 | Image Generation | LOCKED |
 | 8 | TTS & Timing | LOCKED |

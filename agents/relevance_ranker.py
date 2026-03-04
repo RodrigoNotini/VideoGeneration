@@ -31,7 +31,7 @@ DEFAULT_TEMPERATURE = 0.0
 DEFAULT_TOP_P = 1.0
 DEFAULT_TARGET_SELECTION_COUNT = 1
 DEFAULT_MIN_OVERLAP_RATIO = 0.9
-OPENAI_TIMEOUT_SECONDS = 30.0
+DEFAULT_TIMEOUT_SECONDS = 90.0
 NO_SELECTION_URL = "https://example.com/phase3/no_selection"
 TIE_BREAK_POLICY = "score_desc_then_published_at_desc_then_url_asc"
 SUPPORTED_TIE_BREAK_POLICIES = {TIE_BREAK_POLICY}
@@ -304,6 +304,7 @@ def _ranker_settings(pipeline_config: dict[str, Any], openai_config: dict[str, A
         )
         temperature = float(deterministic_cfg.get("temperature", DEFAULT_TEMPERATURE))
         top_p = float(deterministic_cfg.get("top_p", DEFAULT_TOP_P))
+        timeout_seconds = float(ranker_cfg.get("timeout_seconds", DEFAULT_TIMEOUT_SECONDS))
         min_overlap_ratio = float(
             stability_cfg.get("min_overlap_ratio", DEFAULT_MIN_OVERLAP_RATIO)
         )
@@ -372,6 +373,14 @@ def _ranker_settings(pipeline_config: dict[str, Any], openai_config: dict[str, A
                 details={"top_p": top_p},
             )
         )
+    if not math.isfinite(timeout_seconds) or timeout_seconds <= 0.0:
+        raise RelevanceRankerError(
+            _phase3_error(
+                code="invalid_ranker_config",
+                message="Phase 3 timeout_seconds must be finite and > 0.",
+                details={"timeout_seconds": timeout_seconds},
+            )
+        )
     if not math.isfinite(min_overlap_ratio) or min_overlap_ratio <= 0.0 or min_overlap_ratio > 1.0:
         raise RelevanceRankerError(
             _phase3_error(
@@ -388,6 +397,7 @@ def _ranker_settings(pipeline_config: dict[str, Any], openai_config: dict[str, A
         "target_selection_count": target_selection_count,
         "temperature": temperature,
         "top_p": top_p,
+        "timeout_seconds": round(timeout_seconds, 3),
         "tie_break_policy": tie_break_policy,
         "min_overlap_ratio": round(min_overlap_ratio, 6),
     }
@@ -509,6 +519,7 @@ def _call_ranker_model(
     model_name: str,
     temperature: float,
     top_p: float,
+    timeout_seconds: float,
     prompt_version: str,
     openai_api_key_env_var: str,
 ) -> tuple[dict[str, Any], dict[str, int]]:
@@ -518,7 +529,7 @@ def _call_ranker_model(
         raise RankerDependencyError("Missing dependency: openai. Install requirements/phase3.txt") from error
 
     api_key = str(os.getenv(openai_api_key_env_var, "")).strip()
-    client = OpenAI(api_key=api_key) if api_key else OpenAI()
+    client = OpenAI(api_key=api_key, max_retries=0) if api_key else OpenAI(max_retries=0)
 
     system_prompt, user_instruction = _ranker_prompt(
         theme=theme,
@@ -550,7 +561,7 @@ def _call_ranker_model(
         model=model_name,
         temperature=temperature,
         top_p=top_p,
-        timeout=OPENAI_TIMEOUT_SECONDS,
+        timeout=timeout_seconds,
         messages=[
             {"role": "system", "content": system_prompt},
             {"role": "user", "content": user_payload},
@@ -671,6 +682,7 @@ def _score_candidates(
     model_name: str,
     temperature: float,
     top_p: float,
+    timeout_seconds: float,
     prompt_version: str,
     openai_api_key_env_var: str,
 ) -> tuple[dict[int, tuple[float, str, dict[str, float]]], dict[str, Any]]:
@@ -684,6 +696,7 @@ def _score_candidates(
             model_name=model_name,
             temperature=temperature,
             top_p=top_p,
+            timeout_seconds=timeout_seconds,
             prompt_version=prompt_version,
             openai_api_key_env_var=openai_api_key_env_var,
         )
@@ -805,6 +818,7 @@ def _write_artifacts(
                 "name": settings["model_name"],
                 "temperature": settings["temperature"],
                 "top_p": settings["top_p"],
+                "timeout_seconds": settings["timeout_seconds"],
                 "prompt_version": settings["prompt_version"],
             },
             "criteria_policy_version": settings["criteria_policy_version"],
@@ -847,6 +861,7 @@ def _write_artifacts(
                 "name": settings["model_name"],
                 "temperature": settings["temperature"],
                 "top_p": settings["top_p"],
+                "timeout_seconds": settings["timeout_seconds"],
                 "prompt_version": settings["prompt_version"],
             },
             "selection_policy": {
@@ -899,6 +914,7 @@ def run(state: PipelineState) -> PipelineState:
                 model_name=settings["model_name"],
                 temperature=settings["temperature"],
                 top_p=settings["top_p"],
+                timeout_seconds=settings["timeout_seconds"],
                 prompt_version=settings["prompt_version"],
                 openai_api_key_env_var=str(openai_config["api_key_env_var"]),
             )
@@ -949,6 +965,7 @@ def run(state: PipelineState) -> PipelineState:
     flags["phase3_ranker_fallback_used"] = bool(scoring_metadata["fallback_used"])
     flags["phase3_ranker_stability_min_overlap_ratio"] = settings["min_overlap_ratio"]
     flags["phase3_ranker_criteria_policy_version"] = settings["criteria_policy_version"]
+    flags["phase3_ranker_timeout_seconds"] = settings["timeout_seconds"]
     logger.info(
         "PHASE3_RANKER_SUMMARY theme=%s input=%s output=%s retries=%s fallback=%s tie_break_events=%s latency_ms=%s",
         theme,

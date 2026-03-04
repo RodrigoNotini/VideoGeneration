@@ -1,4 +1,33 @@
 # CHANGELOG
+## 0.2.8 - Phase 3 Timeout and Retry Architecture Hardening
+### What Changed
+- Updated Phase 3 ranking architecture to make model timeout configurable via `configs/pipeline.yaml`:
+  - New key: `phase3_ranker.timeout_seconds`
+  - Default value set to `90`
+- Updated Phase 3 runtime (`agents/relevance_ranker.py`) to disable OpenAI SDK retry stacking:
+  - OpenAI client now uses `max_retries=0`
+  - App-level retry policy in `core/model_retry.py` remains authoritative
+- Preserved existing app-level retry contract:
+  - `max_attempts = 2` in `score_with_retry_and_fallback(...)`
+
+### Why
+- Prevent false timeout-triggered fallback in Phase 3 when ranking payloads are valid but require longer inference time.
+- Remove compounded latency from stacked SDK retries + app retries.
+- Keep retry behavior deterministic and controlled by one policy layer.
+
+### Expected Impact
+- Reduced Phase 3 fallback activation caused by timeout pressure.
+- Lower incidence of degraded metadata-only downstream outputs that originate from weak Phase 3 selection.
+- More predictable Phase 3 latency envelope with a single retry authority.
+
+### Validation Method
+- Configure `phase3_ranker.timeout_seconds` and run:
+  - `python -m main --theme AI`
+- Verify logs and metadata:
+  - Fewer `APITimeoutError` fallback paths in `PHASE3_RANKER_SUMMARY`
+  - App-level retries remain capped at 2 attempts
+
+
 ## 0.2.7 - Phase 2 Historical Replacement Mechanism (Worst-10 Swap)
 ### What Changed
 - Added new Phase 2 historical score persistence architecture in `core/persistence/db.py`:

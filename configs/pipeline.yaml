@@ -1,6 +1,6 @@
-name: phase4_article_extraction
-phase: 4
-phase_name: "Article Extraction"
+name: phase5_script_generation
+phase: 5
+phase_name: "Script Generation"
 topic: "AI & Tech Daily Briefing"
 theme: "AI"
 target_platform: "youtube_shorts"
@@ -30,17 +30,26 @@ phase3_ranker:
   criteria_policy_version: "phase3-interestingness-policy-v1"
   target_selection_count: 1
   tie_break_policy: "score_desc_then_published_at_desc_then_url_asc"
+  timeout_seconds: 90
   deterministic:
     temperature: 0.0
     top_p: 1.0
   stability:
     min_overlap_ratio: 0.9
+phase5_script_writer:
+  model: "gpt-4.1-mini"
+  prompt_version: "phase5-script-writer-v1"
+  schema_path: "schemas/script_schema.json"
+  deterministic:
+    temperature: 0.0
+    top_p: 1.0
+  timeout_seconds: 45
 output_dir: "outputs"
 database_path: "data/db/app.sqlite"
-deterministic_seed: "phase4-seed-v1"
+deterministic_seed: "phase5-seed-v1"
 deterministic_started_at: "2026-01-01T00:00:00Z"
 versions:
-  prompt_version: "phase4-article-extractor-v1"
-  schema_version: "phase4-article-schema-v1"
+  prompt_version: "phase5-script-writer-v1"
+  schema_version: "phase5-script-schema-v1"
   template_version: "v1-placeholder"
-  model_version: "phase4-no-model"
+  model_version: "gpt-4.1-mini"

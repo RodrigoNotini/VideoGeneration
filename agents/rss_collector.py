@@ -4,9 +4,11 @@ from __future__ import annotations
 
 import logging
 import os
+import socket
 from datetime import datetime, timedelta, timezone
 from email.utils import parsedate_to_datetime
 from html import unescape
+from ipaddress import ip_address
 from pathlib import Path
 from typing import Any
 from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
@@ -254,6 +256,59 @@ def _sort_items(items: list[dict[str, str]]) -> list[dict[str, str]]:
     return sorted(items, key=_sort_key)
 
 
+def _is_public_ip(ip_value: str) -> bool:
+    try:
+        parsed_ip = ip_address(ip_value)
+    except ValueError:
+        return False
+    return not (
+        parsed_ip.is_private
+        or parsed_ip.is_loopback
+        or parsed_ip.is_link_local
+        or parsed_ip.is_multicast
+        or parsed_ip.is_reserved
+        or parsed_ip.is_unspecified
+    )
+
+
+def _is_safe_feed_url(feed_url: str) -> bool:
+    parsed = urlsplit(str(feed_url or "").strip())
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False
+
+    hostname = (parsed.hostname or "").strip()
+    if not hostname:
+        return False
+
+    lowered_host = hostname.casefold()
+    if lowered_host in {"localhost", "localhost.localdomain"} or lowered_host.endswith(".local"):
+        return False
+
+    if _is_public_ip(hostname):
+        return True
+
+    try:
+        ip_address(hostname)
+        return False
+    except ValueError:
+        try:
+            addr_info = socket.getaddrinfo(hostname, None)
+        except OSError:
+            return False
+        if not addr_info:
+            return False
+        for _, _, _, _, sockaddr in addr_info:
+            if not sockaddr:
+                return False
+            try:
+                resolved_ip = str(sockaddr[0]).strip()
+            except IndexError:
+                return False
+            if not resolved_ip or not _is_public_ip(resolved_ip):
+                return False
+        return True
+
+
 def _fetch_feed_entries(feed_url: str) -> list[dict[str, Any]]:
     try:
         import feedparser
@@ -261,6 +316,9 @@ def _fetch_feed_entries(feed_url: str) -> list[dict[str, Any]]:
         raise RSSCollectorDependencyError(
             "Missing dependency: feedparser. Install requirements/phase1.txt"
         ) from error
+
+    if not _is_safe_feed_url(feed_url):
+        raise ValueError(f"Blocked unsafe feed URL: {feed_url}")
 
     response = requests.get(
         feed_url,

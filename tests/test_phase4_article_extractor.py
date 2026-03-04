@@ -13,6 +13,7 @@ from unittest.mock import Mock, patch
 
 from agents import article_extractor
 from core.common.utils import SCRAPE_POLICY_FULL, SCRAPE_POLICY_METADATA_ONLY
+from core.persistence.db import initialize_database
 from core.state import PipelineState, make_initial_state
 
 
@@ -162,9 +163,9 @@ class Phase4ArticleExtractorTests(unittest.TestCase):
         state["ranked_items"] = [
             {
                 "url": selected_url,
-                "title": "Blocked Story",
+                "title": "<strong>Blocked Story</strong> &amp; More",
                 "source": "Wired",
-                "published_at": "2026-01-03T00:00:00Z",
+                "published_at": "<time>2026-01-03T00:00:00Z</time>",
                 "scrape_policy": SCRAPE_POLICY_METADATA_ONLY,
             }
         ]
@@ -174,10 +175,63 @@ class Phase4ArticleExtractorTests(unittest.TestCase):
 
         self.assertTrue(final_state["article"]["metadata_only"])
         self.assertEqual("policy_blocked", final_state["article"]["extraction_status"])
+        self.assertEqual("Blocked Story & More", final_state["article"]["title"])
+        self.assertEqual("2026-01-03T00:00:00Z", final_state["article"]["published_at"])
+        self.assertFalse(self.HTML_TAG_PATTERN.search(final_state["article"]["title"]))
+        self.assertFalse(self.HTML_TAG_PATTERN.search(final_state["article"]["published_at"]))
         self.assertTrue(final_state["metrics"]["flags"]["phase4_policy_blocked_metadata_only"])
         self.assertFalse(final_state["metrics"]["flags"]["phase4_html_fetch_attempted"])
         self.assertFalse((root / "outputs" / "article_raw.html").exists())
         self.assertTrue((root / "outputs" / "article.json").exists())
+        fetch_html.assert_not_called()
+
+    def test_db_fallback_invalid_policy_fails_closed_without_html_fetch(self) -> None:
+        root = self._make_temp_root()
+        selected_url = "https://example.com/db-invalid-policy"
+
+        connection = initialize_database(root / "data" / "db" / "app.sqlite")
+        try:
+            with connection:
+                connection.execute(
+                    """
+                    INSERT INTO rss_items (
+                        url, title, title_hash, source, scrape_policy, published_at, discovered_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        selected_url,
+                        "DB Invalid Policy Story",
+                        "db-invalid-policy-title-hash",
+                        "Example",
+                        "invalid_policy",
+                        "2026-01-03T00:00:00Z",
+                        "2026-01-03T00:00:00Z",
+                    ),
+                )
+        finally:
+            connection.close()
+
+        state = self._make_state()
+        state["selected_url"] = selected_url
+        state["ranked_items"] = [
+            {
+                "url": selected_url,
+                "title": "DB Invalid Policy Story",
+                "source": "Example",
+                "published_at": "2026-01-03T00:00:00Z",
+            }
+        ]
+
+        with patch.object(article_extractor, "_fetch_html") as fetch_html:
+            final_state = self._run_extractor(root=root, state=state)
+
+        self.assertTrue(final_state["article"]["metadata_only"])
+        self.assertEqual("policy_resolution_failed", final_state["article"]["extraction_status"])
+        self.assertTrue(final_state["article"]["policy_resolution_failed"])
+        self.assertEqual(SCRAPE_POLICY_METADATA_ONLY, final_state["article"]["scrape_policy"])
+        self.assertTrue(final_state["metrics"]["flags"]["phase4_policy_resolution_failed"])
+        self.assertFalse(final_state["metrics"]["flags"]["phase4_html_fetch_attempted"])
+        self.assertFalse((root / "outputs" / "article_raw.html").exists())
         fetch_html.assert_not_called()
 
     def test_fetch_failure_returns_structured_article_json(self) -> None:
@@ -188,9 +242,9 @@ class Phase4ArticleExtractorTests(unittest.TestCase):
         state["ranked_items"] = [
             {
                 "url": selected_url,
-                "title": "Failure Story",
+                "title": "<em>Failure Story</em> &amp; More",
                 "source": "TechCrunch",
-                "published_at": "2026-01-03T00:00:00Z",
+                "published_at": "<span>2026-01-03T00:00:00Z</span>",
                 "summary": "Fallback summary content for extraction failure path.",
                 "scrape_policy": SCRAPE_POLICY_FULL,
             }
@@ -206,6 +260,10 @@ class Phase4ArticleExtractorTests(unittest.TestCase):
         self.assertFalse(article["metadata_only"])
         self.assertEqual("fetch_failed", article["extraction_status"])
         self.assertEqual(SCRAPE_POLICY_FULL, article["scrape_policy"])
+        self.assertEqual("Failure Story & More", article["title"])
+        self.assertEqual("2026-01-03T00:00:00Z", article["published_at"])
+        self.assertFalse(self.HTML_TAG_PATTERN.search(article["title"]))
+        self.assertFalse(self.HTML_TAG_PATTERN.search(article["published_at"]))
         self.assertFalse(final_state["metrics"]["flags"]["phase4_html_fetch_succeeded"])
         self.assertTrue(final_state["metrics"]["flags"]["phase4_extraction_failed"])
         self.assertFalse((root / "outputs" / "article_raw.html").exists())
@@ -356,6 +414,60 @@ class Phase4ArticleExtractorTests(unittest.TestCase):
         ):
             with self.assertRaises(ValueError):
                 article_extractor._fetch_html("https://example.com/public")
+
+    def test_output_dir_rejects_absolute_configured_path(self) -> None:
+        root = self._make_temp_root()
+        with (
+            patch.object(article_extractor, "_project_root", return_value=root),
+            patch.object(
+                article_extractor,
+                "_load_runtime_pipeline_config",
+                return_value={"output_dir": "C:/escape"},
+            ),
+        ):
+            with self.assertRaises(ValueError):
+                article_extractor._output_dir()
+
+    def test_output_dir_rejects_parent_traversal_configured_path(self) -> None:
+        root = self._make_temp_root()
+        with (
+            patch.object(article_extractor, "_project_root", return_value=root),
+            patch.object(
+                article_extractor,
+                "_load_runtime_pipeline_config",
+                return_value={"output_dir": "../outside"},
+            ),
+        ):
+            with self.assertRaises(ValueError):
+                article_extractor._output_dir()
+
+    def test_db_policy_lookup_rejects_absolute_database_path_without_db_init(self) -> None:
+        with (
+            patch.object(
+                article_extractor,
+                "_load_runtime_pipeline_config",
+                return_value={"database_path": "C:/outside/app.sqlite"},
+            ),
+            patch.object(article_extractor, "initialize_database") as db_init,
+        ):
+            policy = article_extractor._resolve_policy_from_db("https://example.com/story")
+
+        self.assertIsNone(policy)
+        db_init.assert_not_called()
+
+    def test_db_policy_lookup_rejects_parent_traversal_database_path_without_db_init(self) -> None:
+        with (
+            patch.object(
+                article_extractor,
+                "_load_runtime_pipeline_config",
+                return_value={"database_path": "../outside/app.sqlite"},
+            ),
+            patch.object(article_extractor, "initialize_database") as db_init,
+        ):
+            policy = article_extractor._resolve_policy_from_db("https://example.com/story")
+
+        self.assertIsNone(policy)
+        db_init.assert_not_called()
 
 
 if __name__ == "__main__":

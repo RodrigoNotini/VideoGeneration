@@ -1,1 +1,3 @@
-﻿# Phase 5 dependencies (Validation Loop)
+﻿# Phase 5 dependencies (Script Generation)
+# No additional third-party dependencies are required for Phase 5.
+# Install base + prior phase requirements only.

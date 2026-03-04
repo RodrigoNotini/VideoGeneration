@@ -175,6 +175,11 @@ class Phase1ExitCriteriaTests(unittest.TestCase):
 
         with (
             patch.object(rss_collector.requests, "get", return_value=_FakeResponse()),
+            patch.object(
+                rss_collector.socket,
+                "getaddrinfo",
+                return_value=[(0, 0, 0, "", ("93.184.216.34", 0))],
+            ),
             patch.dict(sys.modules, {"feedparser": fake_feedparser}),
         ):
             entries = rss_collector._fetch_feed_entries(feed_url)
@@ -200,10 +205,50 @@ class Phase1ExitCriteriaTests(unittest.TestCase):
 
         with (
             patch.object(rss_collector.requests, "get", return_value=_FakeResponse()),
+            patch.object(
+                rss_collector.socket,
+                "getaddrinfo",
+                return_value=[(0, 0, 0, "", ("93.184.216.34", 0))],
+            ),
             patch.dict(sys.modules, {"feedparser": fake_feedparser}),
         ):
             with self.assertRaises(ValueError):
                 rss_collector._fetch_feed_entries(feed_url)
+
+    def test_fetch_feed_entries_blocks_non_http_scheme(self) -> None:
+        fake_feedparser = types.SimpleNamespace(parse=lambda _content: None)
+        with (
+            patch.object(rss_collector.requests, "get") as requests_get,
+            patch.dict(sys.modules, {"feedparser": fake_feedparser}),
+        ):
+            with self.assertRaises(ValueError):
+                rss_collector._fetch_feed_entries("file:///tmp/feed.xml")
+        requests_get.assert_not_called()
+
+    def test_fetch_feed_entries_blocks_localhost_destination(self) -> None:
+        fake_feedparser = types.SimpleNamespace(parse=lambda _content: None)
+        with (
+            patch.object(rss_collector.requests, "get") as requests_get,
+            patch.dict(sys.modules, {"feedparser": fake_feedparser}),
+        ):
+            with self.assertRaises(ValueError):
+                rss_collector._fetch_feed_entries("http://localhost/rss")
+        requests_get.assert_not_called()
+
+    def test_fetch_feed_entries_blocks_dns_resolution_with_private_ip(self) -> None:
+        fake_feedparser = types.SimpleNamespace(parse=lambda _content: None)
+        with (
+            patch.object(rss_collector.requests, "get") as requests_get,
+            patch.object(
+                rss_collector.socket,
+                "getaddrinfo",
+                return_value=[(0, 0, 0, "", ("10.0.0.7", 0))],
+            ),
+            patch.dict(sys.modules, {"feedparser": fake_feedparser}),
+        ):
+            with self.assertRaises(ValueError):
+                rss_collector._fetch_feed_entries("https://feed.example.com/rss")
+        requests_get.assert_not_called()
 
     def test_exit_criteria_rss_fetching_verified(self) -> None:
         root = self._make_temp_root()

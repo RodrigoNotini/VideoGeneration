@@ -82,6 +82,7 @@ class Phase3RelevanceRankerTests(unittest.TestCase):
                 "criteria_policy_version": "phase3-interestingness-policy-v1",
                 "target_selection_count": 1,
                 "tie_break_policy": "score_desc_then_published_at_desc_then_url_asc",
+                "timeout_seconds": 90,
                 "deterministic": {"temperature": 0.0, "top_p": 1.0},
                 "stability": {"min_overlap_ratio": 0.9},
             },
@@ -125,10 +126,11 @@ class Phase3RelevanceRankerTests(unittest.TestCase):
         model_name: str,
         temperature: float,
         top_p: float,
+        timeout_seconds: float,
         prompt_version: str,
         openai_api_key_env_var: str,
     ) -> tuple[dict[int, tuple[float, str, dict[str, float]]], dict[str, Any]]:
-        del criteria, model_name, temperature, top_p, prompt_version, openai_api_key_env_var
+        del criteria, model_name, temperature, top_p, timeout_seconds, prompt_version, openai_api_key_env_var
         labels = self.AI_CRITERIA if theme == "AI" else self.TECH_CRITERIA
         scores: dict[int, tuple[float, str, dict[str, float]]] = {}
         for candidate in candidates:
@@ -388,8 +390,9 @@ class Phase3RelevanceRankerTests(unittest.TestCase):
                 return types.SimpleNamespace(choices=[choice], usage=usage)
 
         class _FakeOpenAI:
-            def __init__(self, api_key: str | None = None) -> None:
+            def __init__(self, api_key: str | None = None, max_retries: int | None = None) -> None:
                 del api_key
+                del max_retries
                 self.chat = types.SimpleNamespace(completions=_FakeCompletions())
 
         fake_openai_module = types.SimpleNamespace(OpenAI=_FakeOpenAI)
@@ -401,12 +404,13 @@ class Phase3RelevanceRankerTests(unittest.TestCase):
                 model_name="gpt-4.1-mini",
                 temperature=0.0,
                 top_p=1.0,
+                timeout_seconds=90.0,
                 prompt_version="phase3-interestingness-ranker-v1",
                 openai_api_key_env_var="OPENAI_API_KEY",
             )
 
         self.assertIn("timeout", captured_kwargs)
-        self.assertEqual(relevance_ranker.OPENAI_TIMEOUT_SECONDS, captured_kwargs["timeout"])
+        self.assertEqual(90.0, captured_kwargs["timeout"])
         self.assertEqual(5, usage["total_tokens"])
         self.assertIn("items", payload)
 
@@ -449,6 +453,7 @@ class Phase3RelevanceRankerTests(unittest.TestCase):
         self.assertEqual("gpt-4.1-mini", ranked["ranking_model"]["name"])
         self.assertEqual(0.0, ranked["ranking_model"]["temperature"])
         self.assertEqual(1.0, ranked["ranking_model"]["top_p"])
+        self.assertEqual(90.0, ranked["ranking_model"]["timeout_seconds"])
         self.assertEqual(
             "phase3-interestingness-ranker-v1",
             ranked["ranking_model"]["prompt_version"],
@@ -466,6 +471,7 @@ class Phase3RelevanceRankerTests(unittest.TestCase):
         self.assertEqual("gpt-4.1-mini", report["model_params"]["name"])
         self.assertEqual(0.0, report["model_params"]["temperature"])
         self.assertEqual(1.0, report["model_params"]["top_p"])
+        self.assertEqual(90.0, report["model_params"]["timeout_seconds"])
         self.assertEqual(
             "phase3-interestingness-ranker-v1",
             report["model_params"]["prompt_version"],
@@ -478,6 +484,7 @@ class Phase3RelevanceRankerTests(unittest.TestCase):
             flags["phase3_ranker_tie_break_policy"],
         )
         self.assertEqual("phase3-interestingness-policy-v1", flags["phase3_ranker_criteria_policy_version"])
+        self.assertEqual(90.0, flags["phase3_ranker_timeout_seconds"])
 
     def test_stability_overlap_meets_threshold_under_controlled_variance(self) -> None:
         root = self._make_temp_root()

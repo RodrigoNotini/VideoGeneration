@@ -1,6 +1,6 @@
 # AI & Tech News -> YouTube Shorts Automation
 
-Phase 4 implementation of a replay-deterministic multi-agent pipeline using LangGraph + SQLite + OpenAI.
+Phase 5 Script Generation runtime for a replay-deterministic multi-agent pipeline using LangGraph + SQLite + OpenAI.
 
 ## Current Phase
 
@@ -10,42 +10,28 @@ Phase 4 implementation of a replay-deterministic multi-agent pipeline using Lang
 | 1 | RSS Discovery | DONE |
 | 2 | Theme URL Selection | DONE |
 | 3 | Interestingness Ranking | DONE |
-| 4 | Article Extraction | IN PROGRESS |
-| 5 | Script Generation | LOCKED |
+| 4 | Article Extraction | DONE |
+| 5 | Script Generation | IN PROGRESS |
 | 6 | Validation Loop | LOCKED |
 | 7 | Image Generation | LOCKED |
 | 8 | TTS & Timing | LOCKED |
 | 9 | Video Rendering | LOCKED |
+| 10 | Production Hardening | LOCKED |
 
-## Phase 4 Scope
+## Phase 5 Scope
 
-Phase 4 extracts clean structured article content from the Phase 3 winner URL and enforces source policy gating.
+Phase 5 adds live Script Generation runtime plus config/prompt/schema contracts while keeping later phases locked.
 
 Implemented:
-- Source policy gate before extraction:
-  - `metadata_only` -> hard block, no HTML fetch attempt.
-  - `full_scrape_allowed` -> fetch and extract cleaned content.
-- Policy resolution order:
-  - ranked item metadata
-  - rss item metadata
-  - DB fallback by URL
-  - fail-closed fallback to `metadata_only`.
-- HTML extraction pipeline:
-  - fetch raw HTML for allowed sources
-  - remove blocked containers (`nav`, `footer`, `script`, ad-like containers)
-  - normalize title/author/published date/paragraphs deterministically.
-- Artifact contract:
-  - `outputs/article.json` always
-  - `outputs/article_raw.html` only when full extraction succeeds.
-- Safety boundary:
-  - raw HTML is never written into `state["article"]`.
-  - downstream receives only cleaned `article` payload.
+- Live LLM-backed script generation runtime in `agents/script_writer.py`.
+- Strict pipeline config validation for `phase5_script_writer` in `configs/pipeline.yaml`.
+- Phase 5 runtime metadata in `configs/pipeline.yaml` (`phase: 5`, `phase_name: "Script Generation"`).
+- Active OpenAI model mapping for `models.script_writer` in `configs/openai.yaml`.
+- Phase 5 system prompt contract in `prompts/script_writer/system.txt` enforcing strict schema-shaped JSON output.
+- `script_writer` node persists `outputs/script.json` and stores the same payload in `state["script_json"]`.
 
-Not implemented in Phase 4:
-- Script generation and validation loop.
-- Image generation.
-- TTS.
-- Video rendering.
+Not implemented yet (future phases):
+- Validation loop, image generation, TTS, and video rendering.
 
 ## Setup
 
@@ -57,9 +43,10 @@ pip install -r requirements/phase1.txt
 pip install -r requirements/phase2.txt
 pip install -r requirements/phase3.txt
 pip install -r requirements/phase4.txt
+pip install -r requirements/phase5.txt
 ```
 
-`requirements/phase3.txt` and `requirements/phase4.txt` currently introduce no additional third-party packages.
+`requirements/phase3.txt`, `requirements/phase4.txt`, and `requirements/phase5.txt` currently introduce no additional third-party packages.
 
 Optional dev tools:
 
@@ -105,8 +92,12 @@ Expected outputs after a successful run:
 - `outputs/selection.json`
 - `outputs/ranking_criteria_report.json`
 - `outputs/article.json`
+- `outputs/script.json`
 - `outputs/article_raw.html` (only when full extraction is allowed and succeeds)
 - `outputs/metadata.json`
+
+Phase 5 script contract:
+- `agents/script_writer.py` emits `outputs/script.json` and mirrors it in `state["script_json"]` inside `outputs/state.json`.
 
 ## Key Configs
 
@@ -117,6 +108,7 @@ From `configs/pipeline.yaml`:
 - `database_path: "data/db/app.sqlite"`
 - `phase2_selector.*`
 - `phase3_ranker.*`
+- `phase5_script_writer.*`
 
 From `configs/rss_feeds.yaml`:
 - each feed must define `scrape_policy` as one of:
@@ -145,6 +137,7 @@ VideoGeneration/
 |   |-- article_extractor.py
 |   |-- relevance_ranker.py
 |   |-- rss_collector.py
+|   |-- script_writer.py
 |   `-- theme_url_selector.py
 |-- core/
 |   |-- model_retry.py
@@ -175,6 +168,7 @@ VideoGeneration/
 |   |-- test_phase2_theme_selector.py
 |   |-- test_phase3_relevance_ranker.py
 |   |-- test_phase4_article_extractor.py
+|   |-- test_phase5_script_writer.py
 |   `-- test_source_policy_contract.py
 |-- prompts/
 |-- schemas/
