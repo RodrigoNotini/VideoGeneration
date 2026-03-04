@@ -3,11 +3,14 @@
 from __future__ import annotations
 
 import logging
+import socket
 import re
+from ipaddress import ip_address
 from html import unescape
 from html.parser import HTMLParser
 from pathlib import Path
 from typing import Any
+from urllib.parse import urljoin, urlparse
 
 import requests
 
@@ -26,6 +29,8 @@ logger = logging.getLogger(__name__)
 HTTP_TIMEOUT_SECONDS = 20
 HTTP_USER_AGENT = "VideoGenerationPhase4Extractor/1.0 (+https://example.com)"
 DEFAULT_OUTPUT_DIR = "outputs"
+MAX_HTML_BYTES = 2_000_000
+MAX_REDIRECT_HOPS = 4
 MAX_PARAGRAPHS = 12
 MAX_PARAGRAPH_CHARS = 420
 MAX_TOTAL_PARAGRAPH_CHARS = 3600
@@ -435,14 +440,124 @@ def _build_full_scrape_article(
 
 
 def _fetch_html(selected_url: str) -> str:
-    response = requests.get(
-        selected_url,
-        timeout=HTTP_TIMEOUT_SECONDS,
-        headers={"User-Agent": HTTP_USER_AGENT},
+    current_url = selected_url
+    for _ in range(MAX_REDIRECT_HOPS + 1):
+        if not _is_public_fetchable_url(current_url):
+            raise ValueError("blocked target url")
+
+        with requests.get(
+            current_url,
+            timeout=HTTP_TIMEOUT_SECONDS,
+            headers={"User-Agent": HTTP_USER_AGENT},
+            stream=True,
+            allow_redirects=False,
+        ) as response:
+            _assert_response_peer_is_public(response)
+            if 300 <= response.status_code < 400:
+                location = response.headers.get("Location", "").strip()
+                if not location:
+                    raise ValueError("redirect without location")
+                next_url = urljoin(current_url, location)
+                current_url = next_url
+                continue
+
+            response.raise_for_status()
+            content_length_header = response.headers.get("Content-Length", "").strip()
+            if content_length_header:
+                try:
+                    advertised_length = int(content_length_header)
+                except ValueError:
+                    advertised_length = 0
+                if advertised_length > MAX_HTML_BYTES:
+                    raise ValueError("response too large")
+
+            chunks: list[bytes] = []
+            total_bytes = 0
+            for chunk in response.iter_content(chunk_size=8192):
+                if not chunk:
+                    continue
+                total_bytes += len(chunk)
+                if total_bytes > MAX_HTML_BYTES:
+                    raise ValueError("response too large")
+                chunks.append(chunk)
+
+            raw_bytes = b"".join(chunks)
+            encoding = response.encoding or response.apparent_encoding or "utf-8"
+            return raw_bytes.decode(encoding, errors="replace")
+    raise ValueError("too many redirects")
+
+
+def _is_public_ip(ip_value: str) -> bool:
+    try:
+        parsed_ip = ip_address(ip_value)
+    except ValueError:
+        return False
+    return not (
+        parsed_ip.is_private
+        or parsed_ip.is_loopback
+        or parsed_ip.is_link_local
+        or parsed_ip.is_multicast
+        or parsed_ip.is_reserved
+        or parsed_ip.is_unspecified
     )
-    response.raise_for_status()
-    response.encoding = response.encoding or response.apparent_encoding or "utf-8"
-    return response.text
+
+
+def _extract_response_peer_ip(response: requests.Response) -> str | None:
+    try:
+        raw_obj = getattr(response, "raw", None)
+        connection = getattr(raw_obj, "_connection", None)
+        sock = getattr(connection, "sock", None)
+        if sock is None:
+            return None
+        peername = sock.getpeername()
+        if not isinstance(peername, tuple) or not peername:
+            return None
+        peer_ip = str(peername[0]).strip()
+        return peer_ip or None
+    except Exception:
+        return None
+
+
+def _assert_response_peer_is_public(response: requests.Response) -> None:
+    peer_ip = _extract_response_peer_ip(response)
+    if not peer_ip:
+        raise ValueError("blocked response destination")
+    if not _is_public_ip(peer_ip):
+        raise ValueError("blocked response destination")
+
+
+def _is_public_fetchable_url(selected_url: str) -> bool:
+    parsed = urlparse(selected_url)
+    if parsed.scheme.lower() not in {"http", "https"}:
+        return False
+    hostname = (parsed.hostname or "").strip()
+    if not hostname:
+        return False
+
+    lowered_host = hostname.casefold()
+    if lowered_host in {"localhost", "localhost.localdomain"} or lowered_host.endswith(".local"):
+        return False
+
+    if _is_public_ip(hostname):
+        return True
+    try:
+        ip_address(hostname)
+        return False
+    except ValueError:
+        try:
+            addr_info = socket.getaddrinfo(hostname, None)
+        except socket.gaierror:
+            return False
+        for _, _, _, _, sockaddr in addr_info:
+            if not sockaddr:
+                return False
+            try:
+                resolved_ip = str(sockaddr[0])
+            except IndexError:
+                return False
+            if not _is_public_ip(resolved_ip):
+                return False
+        return True
 
 
 def _write_text(path: Path, content: str) -> None:
@@ -507,6 +622,32 @@ def run(state: PipelineState) -> PipelineState:
     flags["phase4_html_fetch_attempted"] = True
     flags["phase4_policy_blocked_metadata_only"] = False
     counters["phase4_policy_blocked_count"] = 0
+    if not _is_public_fetchable_url(selected_url):
+        logger.warning("PHASE4_URL_BLOCKED url=%s", selected_url)
+        next_state["article"] = _failed_full_scrape_article(
+            selected_url,
+            selected_item,
+            status="url_blocked",
+            policy_resolution_failed=policy_resolution_failed,
+        )
+        flags["phase4_html_fetch_attempted"] = False
+        flags["phase4_html_fetch_succeeded"] = False
+        flags["phase4_extraction_failed"] = True
+        counters["phase4_extracted_paragraph_count"] = len(next_state["article"]["paragraphs"])
+        _write_article_artifacts(
+            output_dir=output_dir,
+            article_payload=next_state["article"],
+            raw_html=None,
+        )
+        logger.info(
+            "PHASE4_EXTRACTION_SUMMARY policy=%s metadata_only=%s html_fetch_attempted=%s html_fetch_succeeded=%s paragraphs=%s",
+            flags["phase4_selected_scrape_policy"],
+            next_state["article"]["metadata_only"],
+            flags["phase4_html_fetch_attempted"],
+            flags["phase4_html_fetch_succeeded"],
+            counters["phase4_extracted_paragraph_count"],
+        )
+        return next_state
 
     try:
         raw_html = _fetch_html(selected_url)

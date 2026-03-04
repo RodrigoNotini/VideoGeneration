@@ -36,6 +36,7 @@ from core.state import PipelineState, copy_state
 USER_AGENT = "VideoGenerationPhase1RSSCollector/1.0"
 FEED_TIMEOUT_SECONDS = 10
 MAX_ARTICLES_OVERRIDE_ENV = "VG_MAX_ARTICLES_PER_RUN"
+FEED_START_INDEX_OVERRIDE_ENV = "VG_RSS_FEED_START_INDEX"
 TRACKING_QUERY_PREFIXES: tuple[str, ...] = ("utm_",)
 TRACKING_QUERY_KEYS: set[str] = {
     "fbclid",
@@ -97,6 +98,26 @@ def _feed_start_index(*, now_iso: str, total_feeds: int, rotation_basis: str) ->
     date_key = _parse_iso_utc(now_iso).date().isoformat()
     date_seed = int(sha256_text(date_key), 16)
     return date_seed % total_feeds
+
+
+def _resolve_feed_start_index_override(*, total_feeds: int) -> int | None:
+    if total_feeds <= 0:
+        return None
+    raw_override = os.getenv(FEED_START_INDEX_OVERRIDE_ENV)
+    if raw_override is None or not raw_override.strip():
+        return None
+
+    try:
+        parsed_override = int(raw_override)
+    except ValueError as error:
+        raise ValueError(
+            f"Invalid {FEED_START_INDEX_OVERRIDE_ENV}: expected integer >= 0, got {raw_override!r}"
+        ) from error
+    if parsed_override < 0:
+        raise ValueError(
+            f"Invalid {FEED_START_INDEX_OVERRIDE_ENV}: expected integer >= 0, got {parsed_override}"
+        )
+    return parsed_override % total_feeds
 
 
 def _rotate_feeds(feeds: list[dict[str, str]], start_index: int) -> list[dict[str, str]]:
@@ -304,6 +325,13 @@ def run(state: PipelineState) -> PipelineState:
         total_feeds=len(feeds),
         rotation_basis=rotation_basis,
     )
+    override_feed_start_index = _resolve_feed_start_index_override(total_feeds=len(feeds))
+    if override_feed_start_index is not None:
+        feed_start_index = override_feed_start_index
+        logger.info(
+            "Using runtime override for rss feed start index: %s",
+            feed_start_index,
+        )
     rotated_feeds = _rotate_feeds(feeds, feed_start_index)
     rotated_feed_order = [
         f"{str(feed.get('name', '')).strip()} <{str(feed.get('url', '')).strip()}>"

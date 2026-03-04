@@ -32,6 +32,15 @@ def _parse_args() -> argparse.Namespace:
         default=None,
         help="Override max RSS articles fetched in this run (must be >= 1).",
     )
+    parser.add_argument(
+        "--rss-feed-start-index",
+        type=int,
+        default=None,
+        help=(
+            "Override RSS feed start index for this run (must be >= 0). "
+            "If omitted, deterministic rotation is used."
+        ),
+    )
     return parser.parse_args()
 
 
@@ -70,6 +79,11 @@ def main() -> int:
             print("Argument error: --max-articles-per-run must be >= 1")
             return 1
         os.environ["VG_MAX_ARTICLES_PER_RUN"] = str(args.max_articles_per_run)
+    if args.rss_feed_start_index is not None:
+        if args.rss_feed_start_index < 0:
+            print("Argument error: --rss-feed-start-index must be >= 0")
+            return 1
+        os.environ["VG_RSS_FEED_START_INDEX"] = str(args.rss_feed_start_index)
 
     project_root = Path(__file__).resolve().parent
     load_dotenv(dotenv_path=project_root / ".env", override=False)

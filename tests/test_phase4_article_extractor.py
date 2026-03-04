@@ -9,7 +9,7 @@ import time
 import unittest
 from pathlib import Path
 from typing import Any
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from agents import article_extractor
 from core.common.utils import SCRAPE_POLICY_FULL, SCRAPE_POLICY_METADATA_ONLY
@@ -18,6 +18,35 @@ from core.state import PipelineState, make_initial_state
 
 class Phase4ArticleExtractorTests(unittest.TestCase):
     HTML_TAG_PATTERN = re.compile(r"<[^>]+>")
+
+    def _assert_payload_matches_schema(self, payload: dict[str, Any], schema: dict[str, Any]) -> None:
+        required = schema.get("required", [])
+        properties = schema.get("properties", {})
+        self.assertTrue(set(required).issubset(set(payload.keys())))
+        self.assertTrue(set(payload.keys()).issubset(set(properties.keys())))
+
+        type_map: dict[str, type[Any]] = {
+            "string": str,
+            "boolean": bool,
+            "array": list,
+            "object": dict,
+        }
+        for key, property_schema in properties.items():
+            if key not in payload:
+                continue
+            expected_type_name = property_schema.get("type")
+            if expected_type_name in type_map:
+                self.assertIsInstance(payload[key], type_map[expected_type_name])
+
+            allowed_values = property_schema.get("enum")
+            if isinstance(allowed_values, list):
+                self.assertIn(payload[key], allowed_values)
+
+            if expected_type_name == "array" and isinstance(payload[key], list):
+                item_type_name = property_schema.get("items", {}).get("type")
+                if item_type_name in type_map:
+                    for item in payload[key]:
+                        self.assertIsInstance(item, type_map[item_type_name])
 
     def _make_temp_root(self) -> Path:
         base = Path(__file__).resolve().parent / ".tmp"
@@ -206,12 +235,25 @@ class Phase4ArticleExtractorTests(unittest.TestCase):
 
         schema_path = Path(__file__).resolve().parent.parent / "schemas" / "article_schema.json"
         schema = json.loads(schema_path.read_text(encoding="utf-8"))
-        required = set(schema.get("required", []))
-        allowed = set(schema.get("properties", {}).keys())
+        self._assert_payload_matches_schema(article, schema)
 
-        self.assertTrue(required.issubset(set(article.keys())))
-        self.assertTrue(set(article.keys()).issubset(allowed))
-        self.assertIsInstance(article["paragraphs"], list)
+    def test_schema_guard_catches_invalid_scrape_policy_enum(self) -> None:
+        schema_path = Path(__file__).resolve().parent.parent / "schemas" / "article_schema.json"
+        schema = json.loads(schema_path.read_text(encoding="utf-8"))
+        invalid_payload: dict[str, Any] = {
+            "title": "Bad",
+            "author": "",
+            "published_at": "",
+            "source_url": "https://example.com",
+            "paragraphs": [],
+            "scrape_policy": "invalid_policy",
+            "metadata_only": False,
+            "extraction_status": "extracted",
+            "policy_resolution_failed": False,
+        }
+
+        with self.assertRaises(AssertionError):
+            self._assert_payload_matches_schema(invalid_payload, schema)
 
     def test_no_raw_html_is_exposed_in_article_payload(self) -> None:
         root = self._make_temp_root()
@@ -241,6 +283,79 @@ class Phase4ArticleExtractorTests(unittest.TestCase):
         self.assertFalse(self.HTML_TAG_PATTERN.search(article["author"]))
         for paragraph in article["paragraphs"]:
             self.assertFalse(self.HTML_TAG_PATTERN.search(paragraph))
+
+    def test_blocks_non_public_url_before_fetch(self) -> None:
+        root = self._make_temp_root()
+        state = self._make_state()
+        selected_url = "http://127.0.0.1/internal"
+        state["selected_url"] = selected_url
+        state["ranked_items"] = [
+            {
+                "url": selected_url,
+                "title": "Loopback Story",
+                "source": "Example",
+                "published_at": "2026-01-05T00:00:00Z",
+                "scrape_policy": SCRAPE_POLICY_FULL,
+            }
+        ]
+        with patch.object(article_extractor, "_fetch_html") as fetch_html:
+            final_state = self._run_extractor(root=root, state=state)
+
+        self.assertEqual("url_blocked", final_state["article"]["extraction_status"])
+        self.assertTrue(final_state["metrics"]["flags"]["phase4_extraction_failed"])
+        self.assertFalse(final_state["metrics"]["flags"]["phase4_html_fetch_attempted"])
+        self.assertFalse((root / "outputs" / "article_raw.html").exists())
+        fetch_html.assert_not_called()
+
+    def test_fetch_html_blocks_redirect_to_private_destination(self) -> None:
+        first_response = Mock()
+        first_response.__enter__ = Mock(return_value=first_response)
+        first_response.__exit__ = Mock(return_value=False)
+        first_response.status_code = 302
+        first_response.headers = {"Location": "http://127.0.0.1/private"}
+        first_response.iter_content = Mock(return_value=iter(()))
+        first_response.encoding = "utf-8"
+        first_response.apparent_encoding = "utf-8"
+
+        with patch.object(article_extractor.requests, "get", return_value=first_response):
+            with self.assertRaises(ValueError):
+                article_extractor._fetch_html("https://example.com/public")
+
+    def test_fetch_html_blocks_private_effective_destination_ip(self) -> None:
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.status_code = 200
+        response.headers = {}
+        response.iter_content = Mock(return_value=iter((b"<html></html>",)))
+        response.encoding = "utf-8"
+        response.apparent_encoding = "utf-8"
+        response.raise_for_status = Mock()
+
+        with (
+            patch.object(article_extractor.requests, "get", return_value=response),
+            patch.object(article_extractor, "_extract_response_peer_ip", return_value="127.0.0.1"),
+        ):
+            with self.assertRaises(ValueError):
+                article_extractor._fetch_html("https://example.com/public")
+
+    def test_fetch_html_blocks_when_effective_destination_ip_is_unavailable(self) -> None:
+        response = Mock()
+        response.__enter__ = Mock(return_value=response)
+        response.__exit__ = Mock(return_value=False)
+        response.status_code = 200
+        response.headers = {}
+        response.iter_content = Mock(return_value=iter((b"<html></html>",)))
+        response.encoding = "utf-8"
+        response.apparent_encoding = "utf-8"
+        response.raise_for_status = Mock()
+
+        with (
+            patch.object(article_extractor.requests, "get", return_value=response),
+            patch.object(article_extractor, "_extract_response_peer_ip", return_value=None),
+        ):
+            with self.assertRaises(ValueError):
+                article_extractor._fetch_html("https://example.com/public")
 
 
 if __name__ == "__main__":

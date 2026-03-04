@@ -596,6 +596,33 @@ class Phase1ExitCriteriaTests(unittest.TestCase):
         self.assertEqual(1, len(final_state["rss_items"]))
         self.assertEqual(1, final_state["metrics"]["counters"]["rss_items_target_count"])
 
+    def test_feed_start_index_can_be_overridden_via_env(self) -> None:
+        root = self._make_temp_root()
+        feeds = [
+            {"name": "Feed A", "url": "https://feed.example.com/a"},
+            {"name": "Feed B", "url": "https://feed.example.com/b"},
+            {"name": "Feed C", "url": "https://feed.example.com/c"},
+        ]
+        entries_by_feed_url = {
+            "https://feed.example.com/a": [{"title": "A1", "link": "https://example.com/a1"}],
+            "https://feed.example.com/b": [{"title": "B1", "link": "https://example.com/b1"}],
+            "https://feed.example.com/c": [{"title": "C1", "link": "https://example.com/c1"}],
+        }
+
+        with patch.dict(os.environ, {"VG_RSS_FEED_START_INDEX": "2"}, clear=False):
+            final_state, fetch_calls = self._run_collector(
+                root=root,
+                feeds=feeds,
+                entries_by_feed_url=entries_by_feed_url,
+                max_articles_per_run=1,
+                rss_skip_fetch_threshold=999,
+                now_iso="2026-01-01T00:00:00Z",
+            )
+
+        self.assertEqual(2, final_state["metrics"]["counters"]["rss_feed_start_index"])
+        self.assertEqual(["https://feed.example.com/c"], fetch_calls)
+        self.assertEqual("https://feed.example.com/c", final_state["metrics"]["flags"]["rss_feed_rotation_first_feed_url"])
+
     def test_scrape_policy_fetch_path_persists_to_state_and_db(self) -> None:
         root = self._make_temp_root()
         feed_url = "https://feed.example.com/policy-fetch"

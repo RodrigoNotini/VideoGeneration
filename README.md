@@ -86,8 +86,13 @@ python main.py --theme Tech
 # Override max articles for this run
 python main.py --max-articles-per-run 30
 
-# Override both in one command
+# Override RSS feed start index for this run
+# (0-based; if omitted, deterministic rotation is used)
+python main.py --rss-feed-start-index 2
+
+# Override all in one command
 python main.py --theme AI --max-articles-per-run 30
+python main.py --theme AI --max-articles-per-run 30 --rss-feed-start-index 2
 ```
 
 ## Runtime Output
